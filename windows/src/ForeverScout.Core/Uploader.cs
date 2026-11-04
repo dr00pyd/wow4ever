@@ -1,0 +1,180 @@
+namespace ForeverScout.Core;
+
+public sealed class SyncReport
+{
+    public int FilesUploaded { get; set; }
+    public int FilesUnchanged { get; set; }
+    /// <summary>Filer som inte skickades eftersom addonversionen i dem är spärrad.</summary>
+    public int FilesBlocked { get; set; }
+    /// <summary>Filer som inte gick att parsa helt (spelet skriver kanske fortfarande) – skickas inte.</summary>
+    public int FilesIncomplete { get; set; }
+    /// <summary>Filer som innehåller annat än exakt en global, ForeverScoutDB – vägras och skickas aldrig.</summary>
+    public int FilesRefused { get; set; }
+    public int HotfixStored { get; set; }
+    public List<ConfirmedItem> NewConfirmed { get; } = new();
+    /// <summary>Fel som ska visas (översätts med <see cref="Strings.Error"/>).</summary>
+    public Exception? Error { get; set; }
+    /// <summary>Felet är tillfälligt (nät, 5xx, 429) – ett nytt försök är schemalagt.</summary>
+    public bool WillRetry { get; set; }
+    /// <summary>Servern (422) eller spärrlistan säger att addonen måste uppdateras.</summary>
+    public bool AddonBlocked { get; set; }
+    public bool NothingToDo => FilesUploaded == 0 && HotfixStored == 0 && Error is null && !AddonBlocked;
+}
+
+/// <summary>
+/// Laddar upp SavedVariables och DBCache.bin. Kön är tillståndsbaserad: varje försök skickar det som ändrats sedan
+/// senaste lyckade uppladdning (servern deduplicerar ändå), och vid nätfel schemaläggs nytt försök med exponentiell backoff.
+/// </summary>
+public sealed class Uploader(ApiClient api, Settings settings)
+{
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    public bool IsBusy => _gate.CurrentCount == 0;
+
+    /// <summary>Antal POST till ladda-upp (för tester och diagnostik).</summary>
+    public int UploadCount { get; private set; }
+
+    public static TimeSpan Backoff(int attempts) =>
+        TimeSpan.FromSeconds(Math.Min(3600, 30 * Math.Pow(2, Math.Max(0, attempts - 1))));
+
+    public bool RetryDue => settings.NextRetryUtc is { } t && t <= DateTime.UtcNow;
+
+    /// <summary>
+    /// Laddar upp ändrade filer. Körningar köas (aldrig två samtidigt). En fil skickas bara om den går att parsa helt
+    /// och dess sha256 skiljer sig från förra lyckade uppladdningen för samma kontokatalog (nyckeln är en hash av sökvägen).
+    /// </summary>
+    /// <param name="force">Skicka även oförändrade filer (används inte av appen; servern deduplicerar ändå).</param>
+    public async Task<SyncReport> SyncAsync(GameDir dir, bool force, CancellationToken ct = default)
+    {
+        var report = new SyncReport();
+        await _gate.WaitAsync(ct);
+        try
+        {
+            foreach (var file in WowLocator.SavedVariableFiles(dir))
+            {
+                var key = Privacy.FileKey(file);
+                byte[] bytes = ScoutStats.ReadShared(file);
+                var sha = ApiClient.Sha256Hex(bytes);
+                if (!force && settings.UploadedSha.TryGetValue(key, out var prev) && prev == sha) { report.FilesUnchanged++; continue; }
+                var peek = Peek(bytes);
+                if (!peek.Complete)
+                {
+                    // Halvskriven fil (eller trasig): skicka inte. En ny ändringshändelse/poll försöker igen.
+                    report.FilesIncomplete++;
+                    continue;
+                }
+                if (!peek.OnlyOurs)
+                {
+                    // Bara vår addons data får lämna datorn: exakt en global, ForeverScoutDB.
+                    report.FilesRefused++;
+                    report.Error = new ScoutException(ErrorCodes.NotOurFile);
+                    UploadLog.Append("ladda-upp", bytes.Length, sha, "refused:not-our-file");
+                    continue;
+                }
+                var (addonVersion, maxSeq) = (peek.Addon, peek.Seq);
+                if (addonVersion != null && settings.BlockedAddons.Contains(addonVersion))
+                {
+                    // Servern skulle svara 422 – spara bandbredden och be om en ny addon.
+                    report.FilesBlocked++;
+                    report.AddonBlocked = true;
+                    continue;
+                }
+                UploadResult res;
+                UploadCount++;
+                try { res = await api.UploadAsync(bytes, ct); }
+                catch (ApiException ex)
+                {
+                    UploadLog.Append("ladda-upp", bytes.Length, sha, "error:" + ex.Code + (ex.Status is { } st ? ":" + (int)st : ""));
+                    if (!(ex.FromServer && ex.Code == ErrorCodes.AddonBlocked)) throw;
+                    report.FilesBlocked++;
+                    report.AddonBlocked = true;
+                    if (addonVersion != null && !settings.BlockedAddons.Contains(addonVersion)) settings.BlockedAddons.Add(addonVersion);
+                    continue;
+                }
+                UploadLog.Append("ladda-upp", bytes.Length, sha,
+                    $"ok lastSeq={res.LastSeq} newConfirmed={res.NewConfirmed?.Count ?? 0} points={res.Points}");
+                report.FilesUploaded++;
+                settings.UploadedSha[key] = sha;
+                if (res.LastSeq is long seq) settings.UploadedSeq[key] = seq;
+                else if (maxSeq is long local) settings.UploadedSeq[key] = local;
+                if (res.Points is int p) settings.Points = p;
+                if (res.Rank is int r) settings.Rank = r;
+                if (res.NewConfirmed is { Count: > 0 } nc)
+                {
+                    report.NewConfirmed.AddRange(nc);
+                    settings.LastConfirmed = nc.Take(20).ToList();
+                }
+                settings.LastUploadUtc = DateTime.UtcNow;
+                settings.Save();
+            }
+
+            if (settings.UploadHotfix)
+                foreach (var file in WowLocator.HotfixFiles(dir))
+                {
+                    var key = Privacy.FileKey(file);
+                    // Kopiera först (spelet kan ha filen öppen), hasha sedan.
+                    byte[] bytes = ScoutStats.ReadShared(file);
+                    var sha = ApiClient.Sha256Hex(bytes);
+                    if (settings.HotfixSha.TryGetValue(key, out var prev) && prev == sha) continue;
+                    HotfixResult res;
+                    try { res = await api.UploadHotfixAsync(bytes, ct); }
+                    catch (ApiException ex)
+                    {
+                        UploadLog.Append("hotfix", bytes.Length, sha, "error:" + ex.Code);
+                        throw;
+                    }
+                    UploadLog.Append("hotfix", bytes.Length, sha, res.Stored ? "ok stored" : "ok duplicate");
+                    settings.HotfixSha[key] = sha;
+                    if (res.Stored) report.HotfixStored++;
+                    settings.Save();
+                }
+
+            settings.RetryAttempts = 0;
+            settings.NextRetryUtc = null;
+            settings.Save();
+        }
+        catch (ApiException ex)
+        {
+            report.Error = ex;
+            if (ex.Transient) Schedule(report);
+        }
+        catch (IOException ex)
+        {
+            report.Error = new ScoutException(ErrorCodes.Io, inner: ex);
+            Schedule(report);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            report.Error = new ScoutException(ErrorCodes.Io, inner: ex);
+        }
+        catch (SafeFsException ex)
+        {
+            report.Error = ex; // åtkomst utanför det tillåtna – skyddet slog till, inget skickades
+        }
+        finally { _gate.Release(); }
+        return report;
+    }
+
+    private void Schedule(SyncReport report)
+    {
+        settings.RetryAttempts++;
+        settings.NextRetryUtc = DateTime.UtcNow + Backoff(settings.RetryAttempts);
+        report.WillRetry = true;
+        try { settings.Save(); } catch { }
+    }
+
+    public readonly record struct PeekResult(bool Complete, bool OnlyOurs, string? Addon, long? Seq);
+
+    /// <summary>
+    /// Går filen att parsa helt (annars är den kanske halvskriven), och innehåller den EXAKT en global –
+    /// ForeverScoutDB som tabell? Plus addonversion och högsta seq.
+    /// </summary>
+    public static PeekResult Peek(byte[] bytes)
+    {
+        Dictionary<string, object?> g;
+        try { g = LuaParser.ParseGlobals(bytes); }
+        catch (LuaParseException) { return new(false, false, null, null); }
+        if (!g.TryGetValue("ForeverScoutDB", out var v) || v is not LuaTable t) return new(g.Count > 0, false, null, null);
+        return new(true, g.Count == 1, t.Str("addon"), t.Int("seq"));
+    }
+}

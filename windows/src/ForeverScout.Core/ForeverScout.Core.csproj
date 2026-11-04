@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ForeverScout.Core</RootNamespace>
+    <Company>Forever-guiden (guide.wow4ever.se)</Company>
+    <Product>Forever Scout</Product>
+    <Version>1.0.0</Version>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <!--
+    Släppnyckeln: Release-bygget (= dotnet publish) avbryts så länge platshållaren står kvar i UpdateKeys.cs.
+    Debug-bygget (tester) varnar bara. -p:ScoutDevBuild=true ger ett utvecklingsbygge som bygger ändå –
+    det vägrar då alla uppdateringar, eftersom ingen nyckel finns. Släpp ALDRIG ett sådant bygge.
+  -->
+  <Target Name="ScoutKeyGuard" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <_ScoutKeyText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)UpdateKeys.cs'))</_ScoutKeyText>
+      <_ScoutKeyMissing>$(_ScoutKeyText.Contains('__SCOUT_PUBLIC_KEY_PLACEHOLDER__'))</_ScoutKeyMissing>
+    </PropertyGroup>
+    <Error Condition="'$(_ScoutKeyMissing)' == 'True' and '$(Configuration)' == 'Release' and '$(ScoutDevBuild)' != 'true'"
+           Text="UpdateKeys.cs har fortfarande platshållaren för släppnyckeln. Kör 'node scripts/scout-sign.mjs --genkey &lt;katalog&gt;' och klistra in den publika nyckeln (eller bygg med -p:ScoutDevBuild=true för ett utvecklingsbygge som vägrar alla uppdateringar)." />
+    <Warning Condition="'$(_ScoutKeyMissing)' == 'True' and ('$(Configuration)' != 'Release' or '$(ScoutDevBuild)' == 'true')"
+             Text="Utvecklingsbygge utan släppnyckel: klienten vägrar alla uppdateringar." />
+  </Target>
+
+</Project>

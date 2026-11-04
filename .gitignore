@@ -1,0 +1,13 @@
+bin/
+obj/
+dist/
+.vs/
+TestResults/
+*.user
+# Hemligheter hör aldrig hemma här
+.env*
+*.pem
+*.key
+*.pfx
+*.p12
+*.sqlite

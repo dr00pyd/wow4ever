@@ -1,0 +1,60 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ForeverScout</RootNamespace>
+    <AssemblyName>ForeverScout</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <!-- Versionsinfo i exe:n (minskar AV-falsklarm). -->
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Company>Forever-guiden (guide.wow4ever.se)</Company>
+    <Product>Forever Scout</Product>
+    <AssemblyTitle>Forever Scout</AssemblyTitle>
+    <Description>Forever Scout - laddar upp addon-data till Forever-guiden</Description>
+    <Copyright>Forever-guiden 2026</Copyright>
+    <NeutralLanguage>sv-SE</NeutralLanguage>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- Publicering: self-contained single-file win-x64 UTAN komprimering (EnableCompressionInSingleFile liknar en packer
+         och ger AV-falsklarm), inga packers, ingen trimning, ingen obfuskering. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>embedded</DebugType>
+    <SatelliteResourceLanguages>sv;en</SatelliteResourceLanguages>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ForeverScout.Core\ForeverScout.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Logotyp och fältikoner (genereras av tools/make-icons.mjs). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\*.png" LogicalName="res/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="app.ico" LogicalName="res/app.ico" />
+  </ItemGroup>
+
+  <!-- Addonen paketeras som den ser ut vid bygget (client/addon/ForeverScout/**). -->
+  <PropertyGroup>
+    <AddonDir>$(MSBuildThisFileDirectory)..\..\..\addon\ForeverScout\</AddonDir>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(AddonDir)')">
+    <EmbeddedResource Include="$(AddonDir)**\*" Exclude="$(AddonDir)**\.git*">
+      <LogicalName>addon/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

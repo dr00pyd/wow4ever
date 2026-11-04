@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ForeverScout.Core/ForeverScout.Core.csproj" />
+    <Project Path="src/ForeverScout/ForeverScout.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ForeverScout.Tests.csproj" />
+  </Folder>
+</Solution>
