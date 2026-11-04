@@ -11,11 +11,13 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Egenritade kontroller används bara i kod, aldrig i designern. -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
 
     <!-- Versionsinfo i exe:n (minskar AV-falsklarm). -->
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.0.2</Version>
+    <FileVersion>1.0.2.0</FileVersion>
+    <AssemblyVersion>1.0.2.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>
@@ -39,6 +41,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ForeverScout.Core\ForeverScout.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ForeverScout.Tests" />
   </ItemGroup>
 
   <!-- Logotyp och fältikoner (genereras av tools/make-icons.mjs). -->

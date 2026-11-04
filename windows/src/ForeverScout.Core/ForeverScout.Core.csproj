@@ -7,7 +7,7 @@
     <RootNamespace>ForeverScout.Core</RootNamespace>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
-    <Version>1.0.0</Version>
+    <Version>1.0.2</Version>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
 
@@ -26,5 +26,9 @@
     <Warning Condition="'$(_ScoutKeyMissing)' == 'True' and ('$(Configuration)' != 'Release' or '$(ScoutDevBuild)' == 'true')"
              Text="Utvecklingsbygge utan släppnyckel: klienten vägrar alla uppdateringar." />
   </Target>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ForeverScout.Tests" />
+  </ItemGroup>
 
 </Project>

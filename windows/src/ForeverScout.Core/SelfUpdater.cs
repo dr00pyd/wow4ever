@@ -7,7 +7,7 @@ namespace ForeverScout.Core;
 /// </summary>
 public static class SelfUpdater
 {
-    public static string CurrentExe => Environment.ProcessPath ?? throw new ScoutException(ErrorCodes.ExePath);
+    public static string CurrentExe => SafeFs.OwnExeOverride ?? Environment.ProcessPath ?? throw new ScoutException(ErrorCodes.ExePath);
     public static string NewExe => Path.ChangeExtension(CurrentExe, ".new.exe");
     public static string OldExe => Path.ChangeExtension(CurrentExe, ".old.exe");
 

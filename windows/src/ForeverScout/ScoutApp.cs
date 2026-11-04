@@ -17,7 +17,28 @@ internal sealed class ScoutApp : ApplicationContext
     public TrayState State { get; private set; } = TrayState.Normal;
     public string StatusText { get; private set; } = "";
     public Color StatusColor { get; private set; } = Theme.Muted;
-    public bool Uploading => _uploader.IsBusy || _uploadingUi;
+    public bool Uploading => _uploader.IsBusy || _uploadingUi || _simUploading;
+
+    /// <summary>Senaste fel som visas (redan översatt), null om inget.</summary>
+    public string? ErrorText => _errorText;
+    /// <summary>Finns minst en ForeverScout.lua (dvs. har spelet sparat addonens data någon gång)?</summary>
+    public bool HasSavedVariables { get; private set; }
+
+    /// <summary>Scoutens lägerjournal: senaste händelserna (tid, text, färg), nyast först, högst 6.</summary>
+    public IReadOnlyList<(DateTime At, string Text, Color Color)> Journal => _journal;
+    private readonly List<(DateTime At, string Text, Color Color)> _journal = new();
+    private bool _simUploading;
+
+    public void Log(string text, Color color)
+    {
+        _journal.Insert(0, (DateTime.Now, text, color));
+        if (_journal.Count > 6) _journal.RemoveAt(_journal.Count - 1);
+        _form?.ShowJournal();
+    }
+
+    private int _humor;
+    /// <summary>Ett litet skämt – bara efter att servern bekräftat, aldrig i stället för fel.</summary>
+    private string Humor() => S("humor." + (1 + (_humor++ % 3)));
 
     private readonly Uploader _uploader;
     private readonly SyncCoordinator _sync;
@@ -150,6 +171,7 @@ internal sealed class ScoutApp : ApplicationContext
             {
                 AddonInstaller.Install(dir, AddonBundle.Files);
                 Toast("Forever Scout", F("addon.installed", bundled));
+                Log(F("journal.addon", bundled), Theme.Ok);
             }
         }
         catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetError(Error(ex)); }
@@ -159,8 +181,9 @@ internal sealed class ScoutApp : ApplicationContext
 
     public void RefreshStats(bool force)
     {
-        if (CurrentDir is not { } dir) { Stats = new ScoutStats(); _form?.ShowStats(); return; }
+        if (CurrentDir is not { } dir) { Stats = new ScoutStats(); HasSavedVariables = false; _form?.ShowStats(); return; }
         var sv = WowLocator.SavedVariableFiles(dir);
+        HasSavedVariables = sv.Count > 0;
         var hf = Settings.UploadHotfix ? WowLocator.HotfixFiles(dir) : [];
         string stamp = FileStability.Snapshot(sv.Concat(hf).ToList())
                        + "|" + string.Join(",", Settings.UploadedSeq.Values) + "|" + string.Join(",", Settings.HotfixSha.Values);
@@ -193,6 +216,8 @@ internal sealed class ScoutApp : ApplicationContext
             if (me.Points is int p) Settings.Points = p;
             if (me.Rank is int r) Settings.Rank = r;
             if (me.Name is { Length: > 0 } n) Settings.ContributorName = n;
+            Settings.AcceptedTotal = me.AcceptedTotal();
+            Settings.ConfirmedTotal = me.Confirmed; // null tills servern skickar fältet "confirmed" → visas som "–"
             if (me.Recent is { Count: > 0 } recent && Settings.LastConfirmed.Count == 0)
                 Settings.LastConfirmed = recent.Select(ToConfirmed).OfType<ConfirmedItem>().Take(5).ToList();
             Settings.Save();
@@ -283,6 +308,11 @@ internal sealed class ScoutApp : ApplicationContext
         finally { _uploadingUi = false; }
 
         _errorText = report.Error is { } err && !report.WillRetry ? Error(err) : null;
+        var now = When(DateTime.UtcNow);
+        if (report.Error is { } e2) Log(F("journal.error", now, Error(e2)), report.WillRetry ? Theme.Warn : Theme.Err);
+        if (report.FilesUploaded > 0) Log(F("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Theme.Ok);
+        if (report.HotfixStored > 0) Log(F("journal.hotfix", now), Theme.Ok);
+        if (report.NothingToDo && !quietIfNothing) Log(F("journal.nothing", now), Theme.Muted);
         if (report.FilesUploaded > 0 || report.HotfixStored > 0)
             Toast(null, F("done", report.FilesUploaded, report.HotfixStored), onlyIfHidden: true);
         else if (report.NothingToDo && !quietIfNothing)
@@ -417,6 +447,12 @@ internal sealed class ScoutApp : ApplicationContext
         using var f = new PayloadForm(text);
         if (_form is { Visible: true }) f.ShowDialog(_form); else f.ShowDialog();
     }
+
+    // ------------------------------------------------------------------ skärmbilder (bara --screenshots)
+
+    internal void SimulateUploading(bool on) { _simUploading = on; UpdateStatus(); _form?.ShowStats(); }
+    internal void SimulateError(string? text) { _errorText = text; if (text != null) Log(F("journal.error", When(DateTime.UtcNow), text), Theme.Err); UpdateStatus(); _form?.ShowStats(); }
+    internal void SimulateEmpty() { Stats = new ScoutStats(); HasSavedVariables = false; Settings.Points = null; Settings.Rank = null; Settings.AcceptedTotal = null; Settings.LastConfirmed = new(); Settings.LastUploadUtc = null; _journal.Clear(); _form?.ShowStats(); _form?.ShowContribution(); _form?.ShowJournal(); UpdateStatus(); }
 
     public ContextMenuStrip TrayMenu { get { UpdateMenu(); return _trayMenu; } }
 

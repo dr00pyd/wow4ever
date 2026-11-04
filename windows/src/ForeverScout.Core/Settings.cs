@@ -49,6 +49,9 @@ public sealed class Settings
     public DateTime? LastUploadUtc { get; set; }
     public int? Points { get; set; }
     public int? Rank { get; set; }
+    /// <summary>Från /api/bidrag/jag: poster som servern godtagit (summa av counts) resp. bekräftade (fältet "confirmed", om det finns).</summary>
+    public int? AcceptedTotal { get; set; }
+    public int? ConfirmedTotal { get; set; }
     public List<ConfirmedItem> LastConfirmed { get; set; } = new();
 
     [JsonIgnore] public string FilePath { get; private set; } = "";

@@ -6,56 +6,46 @@ using ForeverScout.Core;
 
 namespace ForeverScout;
 
-/// <summary>Färger från app/globals.css ("Lägereld"): varm nästan-svart bas, guld som enda accent.</summary>
+/// <summary>
+/// Design tokens för UI V1 (inkorg/ui/BRIEF-UI-V1.md): Background #17151A · Panel #211C20 · Elevated #292228 ·
+/// Border #42363A · Primary gold #F0B844 · Highlight gold #FFD987 · Text #F3EEE8 · Secondary #B9AAA5 ·
+/// Success #68C8A0 · Error #E47772. Avstånd 4/8/12/16/24/32 px, hörnradie 6–10 px, minsta brödtext 13 px (≈ 9,75 pt).
+/// </summary>
 internal static class Theme
 {
-    public static readonly Color Bg = ColorTranslator.FromHtml("#121013");
-    public static readonly Color Bg2 = ColorTranslator.FromHtml("#17141a");
-    public static readonly Color Surface = ColorTranslator.FromHtml("#1e1a1f");
-    public static readonly Color Surface2 = ColorTranslator.FromHtml("#262127");
-    public static readonly Color Surface3 = ColorTranslator.FromHtml("#2f2930");
-    public static readonly Color Line = Color.FromArgb(255, 0x2a, 0x25, 0x27);
-    public static readonly Color Text = ColorTranslator.FromHtml("#f2ece3");
-    public static readonly Color Muted = ColorTranslator.FromHtml("#b9afa4");
-    public static readonly Color Faint = ColorTranslator.FromHtml("#a09486");
-    public static readonly Color BorderInput = ColorTranslator.FromHtml("#857a6e");
-    public static readonly Color Gold = ColorTranslator.FromHtml("#e9b44c");
-    public static readonly Color GoldHi = ColorTranslator.FromHtml("#ffd27a");
-    public static readonly Color GoldInk = ColorTranslator.FromHtml("#1d1406");
-    public static readonly Color GoldSoft = Color.FromArgb(255, 0x3a, 0x2f, 0x1f);
-    public static readonly Color Ok = ColorTranslator.FromHtml("#7ad69a");
-    public static readonly Color Warn = ColorTranslator.FromHtml("#f0b45a");
-    public static readonly Color Err = ColorTranslator.FromHtml("#f87171");
+    public static readonly Color Bg = ColorTranslator.FromHtml("#17151A");        // Background
+    public static readonly Color Bg2 = ColorTranslator.FromHtml("#1E1920");       // header/sidfot (prototypen)
+    public static readonly Color Footer = ColorTranslator.FromHtml("#151318");
+    public static readonly Color Surface = ColorTranslator.FromHtml("#211C20");   // Panel
+    public static readonly Color Surface2 = ColorTranslator.FromHtml("#292228");  // Elevated panel
+    public static readonly Color Surface3 = ColorTranslator.FromHtml("#302A31");  // sekundär knapp
+    public static readonly Color TableHead = ColorTranslator.FromHtml("#30272B");
+    public static readonly Color Line = ColorTranslator.FromHtml("#42363A");      // Border
+    public static readonly Color LineSoft = ColorTranslator.FromHtml("#3B3035");
+    public static readonly Color Text = ColorTranslator.FromHtml("#F3EEE8");      // Text primary
+    public static readonly Color Muted = ColorTranslator.FromHtml("#B9AAA5");     // Text secondary
+    public static readonly Color Faint = ColorTranslator.FromHtml("#A3948F");
+    public static readonly Color BorderInput = ColorTranslator.FromHtml("#71615F");
+    public static readonly Color InputBg = ColorTranslator.FromHtml("#141217");
+    public static readonly Color Gold = ColorTranslator.FromHtml("#F0B844");      // Primary gold
+    public static readonly Color GoldHi = ColorTranslator.FromHtml("#FFD987");    // Highlight gold
+    public static readonly Color GoldTop = ColorTranslator.FromHtml("#FFD46C");
+    public static readonly Color GoldBottom = ColorTranslator.FromHtml("#E7A735");
+    public static readonly Color GoldInk = ColorTranslator.FromHtml("#291804");
+    public static readonly Color GoldSoft = ColorTranslator.FromHtml("#312721");  // värdshusruta
+    public static readonly Color GoldEdge = ColorTranslator.FromHtml("#5A432C");
+    public static readonly Color Ok = ColorTranslator.FromHtml("#68C8A0");        // Success
+    public static readonly Color OkSoft = ColorTranslator.FromHtml("#28372F");
+    public static readonly Color Warn = ColorTranslator.FromHtml("#F0B45A");
+    public static readonly Color Err = ColorTranslator.FromHtml("#E47772");       // Error
+    public static readonly Color ErrSoft = ColorTranslator.FromHtml("#3A2427");
 
     public static Font Display(float size) => new("Georgia", size, FontStyle.Bold);
     public static Font Ui(float size, FontStyle style = FontStyle.Regular) => new("Segoe UI", size, style);
 
-    public static Button GoldButton(string text)
-    {
-        var b = new Button
-        {
-            Text = text, AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = Gold, ForeColor = GoldInk,
-            Font = Ui(10f, FontStyle.Bold), Padding = new Padding(14, 5, 14, 5), Cursor = Cursors.Hand, UseVisualStyleBackColor = false,
-        };
-        b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = GoldHi;
-        b.FlatAppearance.MouseDownBackColor = GoldHi;
-        return b;
-    }
+    public static Button GoldButton(string text) => new ScoutButton(text, primary: true);
 
-    public static Button QuietButton(string text)
-    {
-        var b = new Button
-        {
-            Text = text, AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = Surface3, ForeColor = Text,
-            Font = Ui(9.5f), Padding = new Padding(10, 4, 10, 4), Cursor = Cursors.Hand, UseVisualStyleBackColor = false,
-        };
-        b.FlatAppearance.BorderColor = BorderInput;
-        b.FlatAppearance.BorderSize = 1;
-        b.FlatAppearance.MouseOverBackColor = Surface2;
-        b.EnabledChanged += (_, _) => b.ForeColor = b.Enabled ? Text : Faint;
-        return b;
-    }
+    public static Button QuietButton(string text) => new ScoutButton(text, primary: false);
 
     public static TextBox Input() => new()
     {

@@ -3,26 +3,44 @@ using static ForeverScout.Core.Strings;
 
 namespace ForeverScout;
 
-/// <summary>Huvudfönstret (en vy över <see cref="ScoutApp"/>). Minimera/X göms till fältet enligt inställningarna.</summary>
+/// <summary>
+/// Dashboard (UI V1, en vy över <see cref="ScoutApp"/>): header, tre översiktskort, datatabell med statusläge per typ,
+/// "Mitt bidrag" (bara data som servern faktiskt levererar) och lägerjournal, statusrad. Minimera/X göms till fältet.
+/// </summary>
 internal sealed class MainForm : Form
 {
+    private const int NarrowWidth = 760;
+
     private readonly ScoutApp _app;
     private readonly ContextMenuStrip _gearMenu = DarkMenuRenderer.NewMenu();
-    private readonly bool[] _allUploaded = new bool[Enum.GetValues<DataKind>().Length];
     private string? _flash;
     private readonly System.Windows.Forms.Timer _flashTimer = new() { Interval = 6000 };
 
-    private readonly Label _title = new() { Text = "Forever Scout", AutoSize = true, Font = Theme.Display(20f), ForeColor = Theme.Text, BackColor = Color.Transparent };
-    private readonly Label _who = Theme.Label("", 9.5f, Theme.Muted);
-    private readonly Button _upload = Theme.GoldButton(S("upload"));
+    // header
+    private readonly Label _who = new() { AutoSize = true, Font = Theme.Ui(9.5f), ForeColor = ColorTranslator.FromHtml("#C6B8AC"), BackColor = Color.Transparent, Margin = new Padding(2, 2, 0, 0) };
+    private readonly Button _upload = Theme.GoldButton("↑  " + S("upload"));
     private readonly Button _gear = Theme.QuietButton("⚙");
+    // översikt
+    private readonly Label _statCollected = StatValue(Theme.Text);
+    private readonly Label _statLast = StatValue(Theme.Ok);
+    private readonly Label _statPoints = StatValue(ColorTranslator.FromHtml("#F6C766"));
+    // tabell
+    private readonly Pill _addonPill = new();
     private readonly DataGridView _grid = new();
-    private readonly Label _points = new() { AutoSize = true, Font = Theme.Display(22f), ForeColor = Theme.Gold, Text = "–" };
-    private readonly Label _rank = new() { AutoSize = true, Font = Theme.Display(22f), ForeColor = Theme.Text, Text = "–" };
-    private readonly FlowLayoutPanel _confirmed = new() { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent };
-    private readonly Label _gameStatus = Theme.Label("", 9f, Theme.Muted);
-    private readonly Label _addonStatus = Theme.Label("", 9f, Theme.Muted);
-    private readonly Label _uploadStatus = Theme.Label("", 9f, Theme.Muted);
+    private readonly (string Text, Color Color)[] _rowStatus = new (string, Color)[Enum.GetValues<DataKind>().Length];
+    // mitt bidrag
+    private readonly Label _points = BigNumber(ColorTranslator.FromHtml("#F4C15B"));
+    private readonly Label _rank = BigNumber(Theme.Text);
+    private readonly Label _confirmedCount = BigNumber(Theme.Ok);
+    private readonly Label _accepted = BigNumber(Theme.Text);
+    private readonly FlowLayoutPanel _mineDetail = Stack();
+    private readonly FlowLayoutPanel _journal = Stack();
+    private TableLayoutPanel _lower = null!;
+    private TableLayoutPanel _stats = null!;
+    // sidfot
+    private readonly Label _footAddon = FootLabel();
+    private readonly Label _footUpload = FootLabel();
+    private readonly Label _footNext = FootLabel();
 
     public MainForm(ScoutApp app)
     {
@@ -31,104 +49,161 @@ internal sealed class MainForm : Form
         Icon = Theme.AppIcon;
         BackColor = Theme.Bg;
         ForeColor = Theme.Text;
-        Font = Theme.Ui(9.5f);
+        Font = Theme.Ui(10f);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(840, 700);
-        MinimumSize = new Size(680, 560);
+        ClientSize = new Size(940, 800);
+        MinimumSize = new Size(620, 560);
         StartPosition = FormStartPosition.CenterScreen;
+        KeyPreview = true;
 
         BuildLayout();
         BuildGearMenu();
         HandleCreated += (_, _) => Theme.DarkTitleBar(this);
-        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) HideToTray(); };
+        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) HideToTray(); else Reflow(); };
         FormClosing += OnClosing;
         _flashTimer.Tick += (_, _) => { _flashTimer.Stop(); _flash = null; ShowStatus(); };
+        KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) { e.Handled = true; _ = _app.UploadNow(quietIfNothing: false); } };
 
         ShowStats();
         ShowContribution();
+        ShowJournal();
         ShowStatus();
+        Reflow();
     }
 
     // ------------------------------------------------------------------ layout
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, BackColor = Theme.Bg, Padding = Padding.Empty };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, BackColor = Theme.Bg2, Padding = new Padding(16, 8, 18, 8), Margin = Padding.Empty };
+        // Header
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, BackColor = Theme.Bg2, Padding = new Padding(20, 12, 20, 12) };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var logo = Theme.Logo(160);
-        logo.Margin = new Padding(0, 0, 16, 0);
-        var titles = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 30, 0, 0), BackColor = Color.Transparent };
-        _title.Margin = Padding.Empty;
-        _who.Margin = new Padding(2, 2, 0, 0);
-        titles.Controls.Add(_title);
+        var logo = Theme.Logo(104);
+        logo.Margin = new Padding(0, 0, 14, 0);
+        var titles = Stack();
+        titles.Anchor = AnchorStyles.Left;
+        titles.Controls.Add(new Label { Text = "Forever Scout", AutoSize = true, Font = Theme.Display(18f), ForeColor = Theme.Text, BackColor = Color.Transparent, Margin = Padding.Empty });
         titles.Controls.Add(_who);
-        var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 34, 0, 0), BackColor = Color.Transparent };
+        var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, BackColor = Color.Transparent, Margin = Padding.Empty };
         _upload.Margin = new Padding(0, 0, 8, 0);
+        _upload.AccessibleName = S("upload");
         _gear.Font = new Font("Segoe UI Symbol", 12f);
-        _gear.Padding = new Padding(6, 0, 6, 0);
+        _gear.AccessibleName = S("set.title");
         _gear.Margin = Padding.Empty;
         actions.Controls.Add(_upload);
         actions.Controls.Add(_gear);
         header.Controls.Add(logo, 0, 0);
         header.Controls.Add(titles, 1, 0);
         header.Controls.Add(actions, 2, 0);
-        root.Controls.Add(header, 0, 0);
+        var headerLine = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Line };
 
-        root.Controls.Add(SectionHead(S("general"), S("general.sub")), 0, 1);
+        // Innehåll (rullbart i små fönster)
+        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, BackColor = Theme.Bg, Padding = new Padding(22, 18, 22, 14), AutoScroll = true };
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // Tabellen får exakt plats för rubrik + 7 rader; korten under tar resten (rullning i små fönster).
+        body.RowStyles.Add(new RowStyle(SizeType.Absolute, LogicalToDeviceUnits(36 * 8 + 2 + 14)));
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // får bli högre än fönstret → rullning
+
+        _stats = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 14) };
+        for (int i = 0; i < 3; i++) _stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        _stats.Controls.Add(StatCard(S("dash.stat.collected"), _statCollected), 0, 0);
+        _stats.Controls.Add(StatCard(S("dash.stat.last"), _statLast), 1, 0);
+        _stats.Controls.Add(StatCard(S("dash.stat.points"), _statPoints), 2, 0);
+        body.Controls.Add(_stats, 0, 0);
+
+        var headRow = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
+        headRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var ht = Stack();
+        ht.Controls.Add(new Label { Text = S("dash.table.title"), AutoSize = true, Font = Theme.Display(15f), ForeColor = Theme.Text, BackColor = Color.Transparent, Margin = Padding.Empty });
+        ht.Controls.Add(new Label { Text = S("dash.table.sub"), AutoSize = true, Font = Theme.Ui(9f), ForeColor = Theme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 3, 0, 0) });
+        _addonPill.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+        headRow.Controls.Add(ht, 0, 0);
+        headRow.Controls.Add(_addonPill, 1, 0);
+        body.Controls.Add(headRow, 0, 1);
 
         StyleGrid();
-        var gridWrap = new Panel { Dock = DockStyle.Fill, Padding = new Padding(22, 0, 22, 0), BackColor = Theme.Bg, Margin = Padding.Empty };
-        gridWrap.Controls.Add(_grid);
-        root.Controls.Add(gridWrap, 0, 2);
+        var gridFrame = new RoundedPanel { Dock = DockStyle.Fill, FillColor = ColorTranslator.FromHtml("#201B20"), BorderColor = ColorTranslator.FromHtml("#4B3D41"), Radius = 8, Padding = new Padding(1), Margin = new Padding(0, 0, 0, 14) };
+        gridFrame.Controls.Add(_grid);
+        body.Controls.Add(gridFrame, 0, 2);
 
-        root.Controls.Add(SectionHead(S("mine"), null), 0, 3);
+        _lower = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Color.Transparent, Margin = Padding.Empty };
+        _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        _lower.Controls.Add(MineCard(), 0, 0);
+        _lower.Controls.Add(JournalCard(), 1, 0);
+        body.Controls.Add(_lower, 0, 3);
 
-        var card = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, BackColor = Theme.Surface, Padding = new Padding(18, 14, 18, 14), Margin = Padding.Empty };
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        card.Controls.Add(Stat(_points, S("points")), 0, 0);
-        card.Controls.Add(Stat(_rank, S("rank")), 1, 0);
-        _confirmed.Margin = new Padding(18, 4, 0, 0);
-        card.Controls.Add(_confirmed, 2, 0);
-        var cardWrap = new Panel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(22, 0, 22, 0), Margin = Padding.Empty };
-        cardWrap.Controls.Add(card);
-        root.Controls.Add(cardWrap, 0, 4);
+        // Sidfot
+        var footer = new TableLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, ColumnCount = 3, BackColor = Theme.Footer, Padding = new Padding(20, 9, 20, 9) };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _footUpload.Anchor = AnchorStyles.None;
+        _footNext.Anchor = AnchorStyles.Right;
+        footer.Controls.Add(_footAddon, 0, 0);
+        footer.Controls.Add(_footUpload, 1, 0);
+        footer.Controls.Add(_footNext, 2, 0);
+        var footerLine = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = ColorTranslator.FromHtml("#352B31") };
 
-        var footer = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Theme.Bg2, Padding = new Padding(20, 8, 20, 8), Margin = new Padding(0, 16, 0, 0), WrapContents = true };
-        foreach (var l in new[] { _gameStatus, _addonStatus, _uploadStatus }) { l.Margin = new Padding(0, 0, 22, 0); footer.Controls.Add(l); }
-        root.Controls.Add(footer, 0, 5);
-
-        Controls.Add(root);
+        Controls.Add(body);
+        Controls.Add(headerLine);
+        Controls.Add(header);
+        Controls.Add(footerLine);
+        Controls.Add(footer);
 
         _upload.Click += async (_, _) => await _app.UploadNow(quietIfNothing: false);
         _gear.Click += (_, _) => _gearMenu.Show(_gear, new Point(_gear.Width - _gearMenu.Width, _gear.Height));
     }
 
-    private static Control SectionHead(string title, string? sub)
+    private static RoundedPanel StatCard(string caption, Label value)
     {
-        var p = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = false, Padding = new Padding(22, 18, 22, 8), Margin = Padding.Empty, BackColor = Theme.Bg };
-        p.Controls.Add(new Label { Text = title, AutoSize = true, Font = Theme.Display(14f), ForeColor = Theme.Text, Margin = new Padding(0, 0, 10, 0) });
-        if (sub != null) p.Controls.Add(new Label { Text = "– " + sub, AutoSize = true, Font = Theme.Ui(10f), ForeColor = Theme.Muted, Margin = new Padding(0, 5, 0, 0) });
-        return p;
+        var card = new RoundedPanel { FillColor = ColorTranslator.FromHtml("#262025"), BorderColor = ColorTranslator.FromHtml("#4D3B3C"), Radius = 9, Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(14, 12, 14, 12), Margin = new Padding(0, 0, 10, 0) };
+        var s = Stack();
+        s.Controls.Add(new Label { Text = caption.ToUpper(Culture), AutoSize = true, Font = Theme.Ui(8.25f), ForeColor = ColorTranslator.FromHtml("#D0BEB2"), BackColor = Color.Transparent, Margin = Padding.Empty });
+        s.Controls.Add(value);
+        card.Controls.Add(s);
+        return card;
     }
 
-    private static Control Stat(Label value, string caption)
+    private RoundedPanel MineCard()
     {
-        var f = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 28, 0), BackColor = Color.Transparent };
+        var card = Card();
+        card.Margin = new Padding(0, 0, 12, 0);
+        var s = Stack();
+        s.Controls.Add(new SmallTitle(S("mine")));
+        var nums = new FlowLayoutPanel { AutoSize = true, WrapContents = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 6), MaximumSize = new Size(520, 0) };
+        nums.Controls.Add(Num(_points, S("points")));
+        nums.Controls.Add(Num(_rank, S("rank")));
+        nums.Controls.Add(Num(_confirmedCount, S("mine.confirmed")));
+        nums.Controls.Add(Num(_accepted, S("mine.accepted")));
+        s.Controls.Add(nums);
+        s.Controls.Add(_mineDetail);
+        s.Controls.Add(new Label { Text = S("mine.hint"), AutoSize = true, MaximumSize = new Size(460, 0), Font = Theme.Ui(8.5f), ForeColor = Theme.Faint, BackColor = Color.Transparent, Margin = new Padding(0, 8, 0, 0) });
+        card.Controls.Add(s);
+        return card;
+    }
+
+    private RoundedPanel JournalCard()
+    {
+        var card = Card();
+        var s = Stack();
+        s.Controls.Add(new SmallTitle(S("journal.title")));
+        s.Controls.Add(_journal);
+        card.Controls.Add(s);
+        return card;
+    }
+
+    private static Control Num(Label value, string caption)
+    {
+        var f = Stack();
+        f.Margin = new Padding(0, 0, 22, 4);
         value.Margin = Padding.Empty;
         f.Controls.Add(value);
-        f.Controls.Add(new Label { Text = caption.ToUpper(Culture), AutoSize = true, Font = Theme.Ui(8f, FontStyle.Bold), ForeColor = Theme.Faint, Margin = new Padding(2, 0, 0, 0) });
+        f.Controls.Add(new Label { Text = caption.ToUpper(Culture), AutoSize = true, Font = Theme.Ui(7.75f, FontStyle.Bold), ForeColor = Theme.Faint, BackColor = Color.Transparent, Margin = new Padding(1, 0, 0, 0) });
         return f;
     }
 
@@ -145,51 +220,52 @@ internal sealed class MainForm : Form
         g.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
         g.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
         g.EnableHeadersVisualStyles = false;
-        g.BackgroundColor = Theme.Surface;
-        g.GridColor = Theme.Line;
+        g.BackgroundColor = ColorTranslator.FromHtml("#201B20");
+        g.GridColor = Theme.LineSoft;
         g.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-        g.ColumnHeadersHeight = 34;
-        g.RowTemplate.Height = 34;
+        g.ColumnHeadersHeight = g.LogicalToDeviceUnits(36);
+        g.RowTemplate.Height = g.LogicalToDeviceUnits(36);
         g.ScrollBars = ScrollBars.Vertical;
+        g.StandardTab = true; // Tab lämnar tabellen (tangentbordsnavigering)
         g.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
         {
-            BackColor = Theme.Surface, ForeColor = Theme.Faint, SelectionBackColor = Theme.Surface, SelectionForeColor = Theme.Faint,
-            Font = Theme.Ui(8.5f, FontStyle.Bold), Padding = new Padding(10, 0, 10, 0),
+            BackColor = Theme.TableHead, ForeColor = ColorTranslator.FromHtml("#C3AE99"), SelectionBackColor = Theme.TableHead, SelectionForeColor = ColorTranslator.FromHtml("#C3AE99"),
+            Font = Theme.Ui(8.25f, FontStyle.Bold), Padding = new Padding(10, 0, 10, 0),
         };
         g.DefaultCellStyle = new DataGridViewCellStyle
         {
-            BackColor = Theme.Surface, ForeColor = Theme.Text, SelectionBackColor = Theme.Surface2, SelectionForeColor = Theme.Text,
+            BackColor = ColorTranslator.FromHtml("#201B20"), ForeColor = Theme.Text, SelectionBackColor = Theme.Surface2, SelectionForeColor = Theme.Text,
             Font = Theme.Ui(10f), Padding = new Padding(10, 0, 10, 0),
         };
-        DataGridViewTextBoxColumn Col(string key, int fill, bool right = false)
+        DataGridViewTextBoxColumn Col(string key, int fill, int min = 60)
         {
-            var c = new DataGridViewTextBoxColumn
+            return new DataGridViewTextBoxColumn
             {
-                HeaderText = S(key).ToUpper(Culture), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = fill,
+                HeaderText = S(key).ToUpper(Culture), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = fill, MinimumWidth = g.LogicalToDeviceUnits(min),
                 SortMode = DataGridViewColumnSortMode.NotSortable,
             };
-            if (right) { c.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight; c.HeaderCell.Style.Alignment = DataGridViewContentAlignment.MiddleRight; }
-            return c;
         }
-        g.Columns.Add(Col("col.type", 23));
-        g.Columns.Add(Col("col.count", 10, right: true));
-        g.Columns.Add(Col("col.size", 12, right: true));
-        g.Columns.Add(Col("col.uploaded", 16, right: true));
-        g.Columns.Add(Col("col.desc", 50));
+        g.Columns.Add(Col("col.type", 22, 110));
+        g.Columns.Add(Col("col.count", 10));
+        g.Columns.Add(Col("col.size", 11));
+        g.Columns.Add(Col("col.status", 21, 130));
+        g.Columns.Add(Col("col.desc", 40, 120));
         g.Columns[0].DefaultCellStyle.Font = Theme.Ui(10f, FontStyle.Bold);
         g.CellFormatting += (_, e) =>
         {
             if (e.RowIndex < 0 || e.CellStyle is not { } st) return;
             st.ForeColor = e.ColumnIndex switch
             {
-                3 when e.RowIndex < _allUploaded.Length && _allUploaded[e.RowIndex] => Theme.Ok,
+                1 or 2 => ColorTranslator.FromHtml("#F2D6A2"), // tabellsiffror
+                3 when e.RowIndex < _rowStatus.Length => _rowStatus[e.RowIndex].Color,
                 4 => Theme.Muted,
                 _ => Theme.Text,
             };
             st.SelectionForeColor = st.ForeColor;
         };
-        foreach (DataKind k in Enum.GetValues<DataKind>()) g.Rows.Add(Kind(k), "0", "–", "0", Desc(k));
-        g.SelectionChanged += (_, _) => g.ClearSelection();
+        foreach (DataKind k in Enum.GetValues<DataKind>()) g.Rows.Add(Kind(k), "0", "–", "", Desc(k));
+        g.SelectionChanged += (_, _) => { if (!g.Focused) g.ClearSelection(); };
+        g.Leave += (_, _) => g.ClearSelection();
     }
 
     private void BuildGearMenu()
@@ -197,6 +273,7 @@ internal sealed class MainForm : Form
         _gearMenu.Items.Add(S("menu.settings"), null, (_, _) => _app.OpenSettings(false));
         _gearMenu.Items.Add(S("menu.payload"), null, (_, _) => _app.ShowPayload());
         _gearMenu.Items.Add(S("menu.update"), null, async (_, _) => await _app.CheckUpdates(interactive: true));
+        _gearMenu.Items.Add(new ToolStripMenuItem(S("menu.login")) { Enabled = false }); // kommer snart
         _gearMenu.Items.Add(new ToolStripSeparator());
         _gearMenu.Items.Add(S("menu.guide"), null, (_, _) => Links.Open(_app.Api, Links.Guide(_app.Api)));
         _gearMenu.Items.Add(S("menu.faq"), null, (_, _) => Links.Open(_app.Api, Links.Faq(_app.Api)));
@@ -207,69 +284,154 @@ internal sealed class MainForm : Form
         _gearMenu.Items.Add(S("menu.exit"), null, (_, _) => _app.Exit());
     }
 
+    /// <summary>Smalt fönster: korten under varandra och ingen beskrivningskolumn.</summary>
+    private void Reflow()
+    {
+        if (_lower is null || _grid.Columns.Count < 5) return;
+        bool narrow = ClientSize.Width < LogicalToDeviceUnits(NarrowWidth);
+        _grid.Columns[4].Visible = !narrow;
+        if (narrow == (_lower.ColumnCount == 1)) return;
+        _lower.SuspendLayout();
+        var a = _lower.Controls[0];
+        var b = _lower.Controls[1];
+        _lower.Controls.Clear();
+        _lower.ColumnStyles.Clear();
+        if (narrow)
+        {
+            _lower.ColumnCount = 1;
+            _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            a.Margin = new Padding(0, 0, 0, 12);
+            _lower.Controls.Add(a, 0, 0);
+            _lower.Controls.Add(b, 0, 1);
+        }
+        else
+        {
+            _lower.ColumnCount = 2;
+            _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+            _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+            a.Margin = new Padding(0, 0, 12, 0);
+            _lower.Controls.Add(a, 0, 0);
+            _lower.Controls.Add(b, 1, 0);
+        }
+        _lower.ResumeLayout();
+    }
+
     // ------------------------------------------------------------------ vyer
+
+    /// <summary>Statusläge per datatyp: ingen data · väntar på spelsparning · redo · pågår · uppladdad · fel.</summary>
+    private (string, Color) RowStatus(KindStats s)
+    {
+        bool uploading = _app.Uploading;
+        bool pending = s.Count > s.Uploaded;
+        if (s.Count == 0)
+            return _app.HasSavedVariables || s.Kind == DataKind.Hotfix ? (S("st.nodata"), Theme.Faint) : (S("st.waiting"), Theme.Muted);
+        if (uploading && pending) return (S("st.uploading"), Theme.Gold);
+        if (pending && _app.ErrorText != null) return (S("st.error"), Theme.Err);
+        if (!pending) return (S("st.uploaded"), Theme.Ok);
+        return (S("st.ready"), Theme.GoldHi);
+    }
 
     public void ShowStats()
     {
         var stats = _app.Stats;
-        int i = 0;
+        int i = 0, total = 0;
         foreach (DataKind k in Enum.GetValues<DataKind>())
         {
             var s = stats[k];
+            if (k != DataKind.Hotfix) total += s.Count;
             var row = _grid.Rows[i];
             row.Cells[1].Value = s.Count.ToString("N0", Culture);
-            row.Cells[2].Value = Size(s.Bytes);
-            row.Cells[3].Value = s.Count == 0 ? "–" : s.Uploaded.ToString("N0", Culture);
-            _allUploaded[i++] = s.Count > 0 && s.Uploaded >= s.Count;
+            row.Cells[2].Value = s.Bytes > 0 ? Size(s.Bytes) : "–";
+            _rowStatus[i] = RowStatus(s);
+            row.Cells[3].Value = _rowStatus[i].Text;
+            i++;
         }
+        _statCollected.Text = total.ToString("N0", Culture);
         _grid.Invalidate();
+        ShowLastUpload();
+    }
+
+    private void ShowLastUpload()
+    {
+        var st = _app.Settings;
+        if (_app.Uploading) { _statLast.Text = S("dash.last.uploading"); _statLast.ForeColor = Theme.Gold; }
+        else if (_app.ErrorText != null) { _statLast.Text = S("dash.last.error"); _statLast.ForeColor = Theme.Err; }
+        else if (st.NextRetryUtc != null) { _statLast.Text = S("dash.last.retry"); _statLast.ForeColor = Theme.Warn; }
+        else if (st.LastUploadUtc is { } t) { _statLast.Text = When(t); _statLast.ForeColor = Theme.Ok; }
+        else { _statLast.Text = S("dash.last.never"); _statLast.ForeColor = Theme.Muted; }
     }
 
     public void ShowContribution()
     {
         var st = _app.Settings;
         _who.Text = st.ContributorName is { } n ? F("as", n) : "";
-        _points.Text = st.Points is int p ? p.ToString("N0", Culture) : "–";
+        var pts = st.Points is int p ? p.ToString("N0", Culture) : "–";
+        _statPoints.Text = pts + (st.Points is null ? "" : " " + S("dash.points.unit"));
+        _points.Text = pts;
         _rank.Text = st.Rank is int r ? "#" + r.ToString("N0", Culture) : "–";
-        _confirmed.SuspendLayout();
-        _confirmed.Controls.Clear();
+        _confirmedCount.Text = st.ConfirmedTotal is int cc ? cc.ToString("N0", Culture) : "–";  // bara från servern
+        _accepted.Text = st.AcceptedTotal is int a ? a.ToString("N0", Culture) : "–";
+
+        _mineDetail.SuspendLayout();
+        _mineDetail.Controls.Clear();
         if (st.LastConfirmed.Count == 0)
         {
-            _confirmed.Controls.Add(new Label { Text = S("confirmed.none"), AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = Theme.Muted, Font = Theme.Ui(9.5f) });
+            if ((st.Points ?? 0) == 0)
+                _mineDetail.Controls.Add(new Label { Text = S("mine.newbie"), AutoSize = true, Font = Theme.Ui(10f, FontStyle.Bold), ForeColor = Theme.Text, BackColor = Color.Transparent, Margin = Padding.Empty });
+            _mineDetail.Controls.Add(new Label { Text = (st.Points ?? 0) == 0 ? S("mine.newbie.text") : S("confirmed.none"), AutoSize = true, MaximumSize = new Size(460, 0), Font = Theme.Ui(9.75f), ForeColor = Theme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 2, 0, 0) });
         }
         else
         {
-            _confirmed.Controls.Add(new Label { Text = S("confirmed"), AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Ui(9.5f), Margin = new Padding(0, 0, 0, 2) });
+            _mineDetail.Controls.Add(new Label { Text = S("confirmed"), AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Ui(9.75f), BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 2) });
             foreach (var item in st.LastConfirmed.Take(3))
             {
                 var url = item.Url;
                 Control c = string.IsNullOrEmpty(url)
-                    ? new Label { Text = "› " + item.Name, AutoSize = true, Font = Theme.Ui(10.5f, FontStyle.Bold), ForeColor = Theme.Text, Margin = new Padding(0, 1, 0, 1) }
+                    ? new Label { Text = "› " + item.Name, AutoSize = true, Font = Theme.Ui(10f, FontStyle.Bold), ForeColor = Theme.Text, BackColor = Color.Transparent, Margin = new Padding(0, 1, 0, 1) }
                     : new LinkLabel
                     {
-                        Text = "› " + item.Name, AutoSize = true, Font = Theme.Ui(10.5f, FontStyle.Bold), LinkColor = Theme.Gold,
+                        Text = "› " + item.Name, AutoSize = true, Font = Theme.Ui(10f, FontStyle.Bold), LinkColor = Theme.Gold, BackColor = Color.Transparent,
                         ActiveLinkColor = Theme.GoldHi, VisitedLinkColor = Theme.Gold, LinkBehavior = LinkBehavior.HoverUnderline, Margin = new Padding(0, 1, 0, 1),
                     };
                 if (c is LinkLabel ll) ll.LinkClicked += (_, _) => Links.Open(_app.Api, url!);
-                _confirmed.Controls.Add(c);
+                _mineDetail.Controls.Add(c);
             }
         }
-        _confirmed.ResumeLayout();
+        _mineDetail.ResumeLayout();
     }
+
+    public void ShowJournal()
+    {
+        _journal.SuspendLayout();
+        _journal.Controls.Clear();
+        var entries = _app.Journal.Take(5).ToList();
+        foreach (var (_, text, color) in entries) _journal.Controls.Add(JournalLine(text, color));
+        _journal.Controls.Add(JournalLine(S("journal.waiting"), Theme.Muted));
+        _journal.ResumeLayout();
+    }
+
+    private static Label JournalLine(string text, Color color) => new()
+    {
+        Text = "● " + text, AutoSize = true, MaximumSize = new Size(380, 0), Font = new Font("Consolas", 9f), ForeColor = color,
+        BackColor = Color.Transparent, Margin = new Padding(0, 3, 0, 3),
+    };
 
     public void ShowStatus()
     {
         var dir = _app.CurrentDir;
-        _gameStatus.Text = "● " + (dir is null ? S("game.none") : S("game.idle"));
-        _gameStatus.ForeColor = dir is null ? Theme.Warn : Theme.Muted;
         var inst = dir is null ? null : AddonInstaller.InstalledVersion(dir);
-        _addonStatus.Text = "● " + (inst != null ? F("addon.ok", inst) : S("addon.missing"));
-        _addonStatus.ForeColor = inst != null ? Theme.Ok : Theme.Warn;
-        _uploadStatus.Text = "● " + (_flash ?? _app.StatusText);
-        _uploadStatus.ForeColor = _flash != null ? Theme.Ok : _app.StatusColor;
+        _addonPill.Set(inst != null ? F("pill.addon", inst) : dir is null ? S("game.none") : S("pill.noaddon"), inst != null ? Theme.Ok : Theme.Err);
+        _footAddon.Text = "● " + (inst != null ? F("pill.addon", inst) : S("pill.noaddon"));
+        _footAddon.ForeColor = inst != null ? Theme.Ok : Theme.Warn;
+        _footUpload.Text = "● " + (_flash ?? (_app.State == TrayState.Normal && dir != null && _app.ErrorText is null && _app.Settings.NextRetryUtc is null && !_app.Settings.AutoUploadPaused && _app.Settings.LastUploadUtc is null ? S("footer.ok") : _app.StatusText));
+        _footUpload.ForeColor = _flash != null ? Theme.Ok : _app.State == TrayState.Normal && dir != null && !_app.Settings.AutoUploadPaused ? Theme.Ok : _app.StatusColor;
+        _footNext.Text = _app.Settings.NextRetryUtc is { } next ? F("retry", When(next)) : S("footer.next");
+        _footNext.ForeColor = _app.Settings.NextRetryUtc is null ? Theme.Muted : Theme.Warn;
         bool busy = _app.Uploading;
         _upload.Enabled = !busy;
-        _upload.Text = busy ? S("uploading") : S("upload");
+        _upload.Text = busy ? S("uploading") : "↑  " + S("upload");
+        _upload.Invalidate();
+        ShowLastUpload();
     }
 
     /// <summary>Kort besked i statusraden (t.ex. "Inget nytt att ladda upp").</summary>
@@ -280,6 +442,18 @@ internal sealed class MainForm : Form
         _flashTimer.Start();
         ShowStatus();
     }
+
+    // ------------------------------------------------------------------ byggklossar
+
+    private static RoundedPanel Card() => new() { FillColor = Theme.Surface, BorderColor = Theme.Line, Radius = 10, Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(16, 14, 16, 14), Margin = Padding.Empty };
+
+    private static FlowLayoutPanel Stack() => new() { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+
+    private static Label StatValue(Color c) => new() { Text = "–", AutoSize = true, Font = Theme.Display(19f), ForeColor = c, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) };
+
+    private static Label BigNumber(Color c) => new() { Text = "–", AutoSize = true, Font = Theme.Display(19f), ForeColor = c, BackColor = Color.Transparent };
+
+    private static Label FootLabel() => new() { AutoSize = true, Font = Theme.Ui(9f), ForeColor = Theme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 0, 18, 0) };
 
     // ------------------------------------------------------------------ fält / stäng
 

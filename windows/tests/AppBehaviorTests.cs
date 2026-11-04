@@ -43,12 +43,12 @@ public class StringsTests
         try
         {
             Strings.Apply("en");
-            Assert.Equal("That name is taken.", Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
+            Assert.StartsWith("That name is taken.", Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
             Assert.Contains("weird-code", Strings.Error(new ApiException("weird-code", System.Net.HttpStatusCode.BadRequest) { FromServer = true }));
             Assert.Equal("ForeverScout.lua could not be read (line 3).", Strings.Error(Assert.Throws<LuaParseException>(() => LuaParser.ParseGlobals("A = {\n x = 1,\n y = @\n}"))));
             Assert.Equal("Could not read or write a file.", Strings.Error(new IOException("Åtkomst nekad C:\\WTF\\Account\\SECRET")));
             Strings.Apply("sv");
-            Assert.Equal("Namnet är upptaget.", Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
+            Assert.StartsWith("Namnet är upptaget.", Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
         }
         finally { Strings.Apply("sv"); }
     }
@@ -154,4 +154,48 @@ public class SingleInstanceTests
     [Fact]
     public void SignalWithoutRunningInstanceReturnsFalse() =>
         Assert.False(SingleInstance.SignalExisting("ForeverScoutTest." + Guid.NewGuid().ToString("N")));
+}
+
+public class V1DataTests
+{
+    [Fact]
+    public void SettingsWithBomAreRead()
+    {
+        var dir = Directory.CreateTempSubdirectory("fs-bom-");
+        try
+        {
+            File.WriteAllText(Path.Combine(dir.FullName, "settings.json"), "{\"Language\":\"en\",\"AutoUpload\":false}", new System.Text.UTF8Encoding(true));
+            var s = Settings.Load(dir.FullName);
+            Assert.Equal("en", s.Language);
+            Assert.False(s.AutoUpload);
+        }
+        finally { SafeFs.UseAppDataDir(TestEnv.AppData); dir.Delete(true); }
+    }
+
+    [Fact]
+    public void MeCountsAreAcceptedNotConfirmed()
+    {
+        // Serverns faktiska form (lib/scout/db.ts me()): counts = godtagna poster per typ; "confirmed" finns inte.
+        var json = """{"name":"x","points":143,"rank":4,"counts":{"npcs":21,"trainers":6,"vendors":7,"quests":9,"objects":4,"loot":8,"flights":3,"hotfix":1},"uploads":3,"held":0,"lastUpload":1793750000000,"recent":[]}""";
+        var me = System.Text.Json.JsonSerializer.Deserialize<MeResult>(json)!;
+        Assert.Equal(58, me.AcceptedTotal()); // hotfix räknas inte
+        Assert.Null(me.Confirmed);            // visas som "–" tills servern skickar fältet
+        var withConfirmed = System.Text.Json.JsonSerializer.Deserialize<MeResult>("""{"confirmed":12}""")!;
+        Assert.Equal(12, withConfirmed.Confirmed);
+        Assert.Null(withConfirmed.AcceptedTotal());
+    }
+
+    [Fact]
+    public void NameTakenPointsToLinkCode()
+    {
+        try
+        {
+            Strings.Apply("sv");
+            Assert.Equal("Namnet är upptaget. Valde du det på webbsidan? Koppla med en kod från guide.wow4ever.se/bidra i stället.",
+                Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
+            Strings.Apply("en");
+            Assert.Contains("Link with a code", Strings.Error(new ApiException("name-taken", System.Net.HttpStatusCode.Conflict) { FromServer = true }));
+        }
+        finally { Strings.Apply("sv"); }
+    }
 }

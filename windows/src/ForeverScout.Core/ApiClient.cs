@@ -32,6 +32,20 @@ public sealed class MeResult
     [JsonPropertyName("rank")] public int? Rank { get; set; }
     [JsonPropertyName("counts")] public JsonElement? Counts { get; set; }
     [JsonPropertyName("recent")] public List<JsonElement>? Recent { get; set; }
+    /// <summary>Antal bekräftade poster (≥ 2 rapportörer). Finns bara om servern skickar fältet – annars null ("–").</summary>
+    [JsonPropertyName("confirmed")] public int? Confirmed { get; set; }
+    [JsonPropertyName("uploads")] public int? Uploads { get; set; }
+    [JsonPropertyName("lastUpload")] public long? LastUpload { get; set; }
+
+    /// <summary>Summan av "counts" för datatyperna (poster som servern godtagit, inte samma sak som bekräftade).</summary>
+    public int? AcceptedTotal()
+    {
+        if (Counts is not { ValueKind: JsonValueKind.Object } c) return null;
+        int sum = 0;
+        foreach (var k in new[] { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights" })
+            if (c.TryGetProperty(k, out var v) && v.TryGetInt32(out var n)) sum += n;
+        return sum;
+    }
 }
 
 /// <summary>API-/nätfel. <see cref="ScoutException.Code"/> är vår kod eller serverns "code"-fält.</summary>

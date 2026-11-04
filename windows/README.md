@@ -97,6 +97,26 @@ Knappen **Öppna logg** finns i Inställningar.
 Lokal data finns i `%APPDATA%\ForeverScout\`: `settings.json` och `key.bin` (DPAPI, CurrentUser). För test kan
 katalogen flyttas med `FOREVERSCOUT_DATADIR`.
 
+## Gränssnitt (UI V1)
+Utformningen följer `inkorg/ui/BRIEF-UI-V1.md` och prototypen. Design tokens finns i `Theme` (`Support.cs`). De egenritade
+kontrollerna ligger i `Ui.cs`: rundade paneler, guldknappar med synlig tangentbordsfokus, inmatningsfält med guldram
+vid fokus och statuspiller.
+- **Onboarding** (`FirstRunForm`): "Slå dig ner vid elden." Registrering med visningsnamn är den primära handlingen.
+  Koppling med kod är tydligt separerad under den. Rutan till höger förklarar vilken data som delas och vad som gäller
+  för integriteten. Här finns ingen inloggningsknapp. "Logga in – kommer snart" finns bara utgråad i kugghjuls- och
+  fältmenyn. Om namnet är upptaget visas en knapp som hoppar till kodfältet.
+- **Dashboard** (`MainForm`):
+  - Tre översiktskort: insamlade poster, senaste uppladdning och poäng.
+  - En tabell med kolumnerna Typ, Antal, Storlek, Status och Beskrivning. Status är ett av: ingen data hittad, väntar
+    på spelsparning, redo att ladda upp, uppladdning pågår, uppladdad ✓ eller fel. "Uppladdad" visas först när
+    servern har svarat OK.
+  - "Mitt bidrag" visar poäng, plats, **bekräftade fynd** och **godtaget av guiden** var för sig. Båda kommer från
+    `/api/bidrag/jag`. Bekräftade fynd visas som "–" tills servern skickar fältet `confirmed`.
+  - Lägerjournalen visar de senaste händelserna, ibland med lite humor. Humorn ersätter aldrig ett fel.
+  - Statusraden visar addon, uppladdning och nästa synk.
+  - I smala fönster döljs beskrivningskolumnen och korten läggs under varandra, och innehållet går att rulla.
+  - F5 laddar upp.
+
 ## Fönster och aktivitetsfält
 - Vid start går appen direkt till fältet och visar inget fönster. Det gäller även med `--tray`, som autostart
   använder. Bara vid allra första starten, innan något är inställt, visas första-start-fönstret.

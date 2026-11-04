@@ -211,7 +211,18 @@ public static class SafeFs
         return null;
     }
 
-    private static string OwnExe => Normalize(Environment.ProcessPath ?? throw new SafeFsException("no-exe", ""));
+    /// <summary>Bara för tester: låtsas att appens exe ligger här (Environment.ProcessPath är testvärden i tester).</summary>
+    internal static string? OwnExeOverride { get; set; }
+
+    private static string OwnExe => Normalize(OwnExeOverride ?? Environment.ProcessPath ?? throw new SafeFsException("no-exe", ""));
+
+    /// <summary>Filerna självuppdateringen får röra: exe, .new.exe (+ dess .tmp under skrivning) och .old.exe.</summary>
+    private static bool IsOwnExeFile(string full)
+    {
+        var exe = OwnExe;
+        var stem = exe[..^4];
+        return Eq(full, exe) || Eq(full, stem + ".new.exe") || Eq(full, stem + ".new.exe.tmp") || Eq(full, stem + ".old.exe");
+    }
 
     /// <summary>Kontrollerar en sökväg mot reglerna och returnerar den normaliserade sökvägen.</summary>
     public static string Check(string path, Access want, bool isDir)
@@ -230,12 +241,7 @@ public static class SafeFs
                 foreach (var pr in ProbeRoots)
                     if (Rel(full, pr) is { } rp && ProbeRule(rp, isDir) is { } a) { allowed = a; scopeRoot = pr; break; }
         }
-        if (allowed is null && !isDir)
-        {
-            var exe = OwnExe;
-            var stem = exe[..^4];
-            if (Eq(full, exe) || Eq(full, stem + ".new.exe") || Eq(full, stem + ".old.exe")) { allowed = Access.Write; scopeRoot = full; }
-        }
+        if (allowed is null && !isDir && IsOwnExeFile(full)) { allowed = Access.Write; scopeRoot = full; }
         if (allowed is null || allowed < want) throw new SafeFsException(allowed is null ? "outside" : "access", full);
         RefuseReparsePoints(full, scopeRoot!);
         return full;
@@ -314,7 +320,8 @@ public static class SafeFs
         return ms.ToArray();
     }
 
-    public static string ReadAllText(string path) => System.Text.Encoding.UTF8.GetString(ReadAllBytes(path));
+    /// <summary>Läser text som UTF-8; en ev. BOM tas bort (t.ex. om settings.json sparats av ett annat program).</summary>
+    public static string ReadAllText(string path) => System.Text.Encoding.UTF8.GetString(ReadAllBytes(path)).TrimStart((char)0xFEFF);
 
     /// <summary>Skriver atomärt (temporärfil + namnbyte).</summary>
     public static void WriteAllBytes(string path, byte[] data)
