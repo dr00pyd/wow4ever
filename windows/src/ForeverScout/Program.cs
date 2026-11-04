@@ -17,18 +17,35 @@ internal static class Program
         bool shots = args.Contains("--screenshots");
 
         ScoutApp? app = null;
-        using var instance = SingleInstance.TryAcquire(
-            InstanceId,
-            () => app?.OnUi(() => app.ShowWindow()),
-            args.Contains("--restarted") ? TimeSpan.FromSeconds(10) : null);
-        if (instance is null) return 0; // en instans körs redan – den har fått signal att visa sitt fönster
+        void Activate() => app?.OnUi(() => app.ShowWindow());
+        var instance = SingleInstance.TryAcquire(InstanceId, Activate, args.Contains("--restarted") ? TimeSpan.FromSeconds(10) : null);
 
-        SelfUpdater.CleanupOld();
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.Dark);
-
         var settings = Settings.Load();
         Strings.Apply(settings.Language);
+
+        if (instance is null)
+        {
+            // En instans körs redan. Fråga den (1.0.3+) via pipen: är vi nyare eller en annan exe tar vi över.
+            var me = new TakeoverRequest(BuildInfo.Version.ToString(3), Environment.ProcessPath ?? "");
+            switch (Takeover.Request(InstanceId, me, TimeSpan.FromSeconds(3)))
+            {
+                case TakeoverOutcome.TakeOver:
+                    instance = SingleInstance.TryAcquire(InstanceId, Activate, TimeSpan.FromSeconds(15));
+                    if (instance is null) { MessageBox.Show(Strings.S("takeover.old"), "Forever Scout", MessageBoxButtons.OK, MessageBoxIcon.Information); return 0; }
+                    break;
+                case TakeoverOutcome.Shown:
+                    return 0; // den körande instansen visar sitt fönster
+                default:
+                    // Ingen svarar: en äldre version (1.0.0–1.0.2) som inte kan lämna över. Säg det tydligt.
+                    MessageBox.Show(Strings.S("takeover.old"), "Forever Scout", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return 0;
+            }
+        }
+        using var _instance = instance;
+
+        SelfUpdater.CleanupOld();
         using var api = new ApiClient { Key = KeyStore.Load() };
 
         bool firstRun = false;
@@ -46,6 +63,11 @@ internal static class Program
 
         using var scout = new ScoutApp(settings, api);
         app = scout;
+        // Lämna över till en nyare (eller annan) exe som startas medan vi kör.
+        using var takeover = Takeover.Listen(
+            InstanceId,
+            req => Takeover.Decide(BuildInfo.Version, Environment.ProcessPath ?? "", req),
+            decision => scout.OnUi(() => { if (decision == TakeoverDecision.Exit) scout.Exit(); else scout.ShowWindow(); }));
         bool showWindow = firstRun || shots; // annars: bara ikonen i fältet
         scout.OnUi(async () =>
         {

@@ -45,7 +45,7 @@ internal sealed class ScoutApp : ApplicationContext
     private string? _gameRoot; // verklig sökväg, godkänd av SafeFs
     private readonly NotifyIcon _tray;
     private readonly ContextMenuStrip _trayMenu;
-    private readonly ToolStripMenuItem _miOpen, _miUpload, _miStatus, _miLogin, _miPause, _miPayload, _miUpdate, _miGuide, _miSettings, _miExit;
+    private readonly ToolStripMenuItem _miOpen, _miUpload, _miStatus, _miLogin, _miPause, _miPayload, _miUpdate, _miGuide, _miSettings, _miAbout, _miExit;
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 15_000 };
     private readonly System.Windows.Forms.Timer _anim = new() { Interval = 350 };
     private readonly Control _ui = new();
@@ -77,9 +77,10 @@ internal sealed class ScoutApp : ApplicationContext
         _miPayload = Item(S("menu.payload"), (_, _) => ShowPayload());
         _miUpdate = Item(S("menu.update"), async (_, _) => await CheckUpdates(interactive: true));
         _miGuide = Item(S("menu.guide"), (_, _) => Links.Open(Api, Links.Guide(Api)));
+        _miAbout = Item(S("menu.about"), (_, _) => ShowAbout());
         _miSettings = Item(S("menu.settings"), (_, _) => OpenSettings(pickDir: false));
         _miExit = Item(S("menu.exit"), (_, _) => Exit());
-        _trayMenu.Items.AddRange([_miOpen, _miUpload, _miStatus, new ToolStripSeparator(), _miLogin, _miPause, _miPayload, _miUpdate, _miGuide, _miSettings, new ToolStripSeparator(), _miExit]);
+        _trayMenu.Items.AddRange([_miOpen, _miUpload, _miStatus, new ToolStripSeparator(), _miLogin, _miPause, _miPayload, _miUpdate, _miGuide, _miSettings, _miAbout, new ToolStripSeparator(), _miExit]);
         _trayMenu.Opening += (_, _) => UpdateMenu();
 
         _tray = new NotifyIcon { Icon = TrayIcons.Normal, Text = "Forever Scout", Visible = true, ContextMenuStrip = _trayMenu };
@@ -117,6 +118,7 @@ internal sealed class ScoutApp : ApplicationContext
     public async Task StartAsync(bool showWindow)
     {
         if (showWindow) ShowWindow();
+        RefreshAutostartPath();
         EnsureGameDir();
         ApplyGameDir();
         InstallBundledAddonIfNeeded();
@@ -129,6 +131,20 @@ internal sealed class ScoutApp : ApplicationContext
     }
 
     private bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
+
+    /// <summary>"Starta med Windows" på: peka Run-värdet på den exe som körs nu (alltid den senaste filen).</summary>
+    private static void RefreshAutostartPath()
+    {
+        try { if (SafeFs.AutostartEnabled) SafeFs.SetAutostart(true); }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
+    }
+
+    /// <summary>"Om Forever Scout": version, variant och var programmet ligger.</summary>
+    public void ShowAbout()
+    {
+        var text = F("about.text", SelfUpdater.CurrentVersion.ToString(3), S(BuildInfo.IsLite ? "about.variant.lite" : "about.variant.full"), Api.BaseUri.Host);
+        MessageBox.Show(_form is { Visible: true } ? _form : null, text, S("about.title"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
 
     public GameDir? CurrentDir => _gameRoot is null ? null : new GameDir(_gameRoot, Path.GetFileName(_gameRoot));
 
@@ -345,14 +361,17 @@ internal sealed class ScoutApp : ApplicationContext
             await UpdateAddon(release, force: false, interactive, announceBlocked: false);
             if (!interactive) return;
 
-            if (release.ClientFile is null || !SelfUpdater.IsNewer(release.Client))
+            // Varje variant uppdaterar sig från sin egen fil: full → clientFile, lite → liteFile.
+            var kind = BuildInfo.UpdateKind;
+            var newVersion = release.VersionOf(kind);
+            if (release.File(kind) is null || !SelfUpdater.IsNewer(newVersion))
             {
                 MessageBox.Show(_form, F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            var exe = await Api.DownloadReleaseFileAsync(release, ReleaseKind.Client, UpdateKeys.PublicKeyPem, 400L * 1024 * 1024);
+            var exe = await Api.DownloadReleaseFileAsync(release, kind, UpdateKeys.PublicKeyPem, 400L * 1024 * 1024);
             SelfUpdater.Stage(exe);
-            if (MessageBox.Show(_form, F("update.ready", release.Client), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            if (MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 SelfUpdater.Swap();
                 Restart();

@@ -126,7 +126,7 @@ public class SingleInstanceTests
         Assert.NotNull(first);
         // Andra starten: annan tråd (en mutex är återinträdbar för sin egen tråd), som i en annan process.
         SingleInstance? second = null;
-        OnOtherThread(() => second = SingleInstance.TryAcquire(id, () => { }));
+        OnOtherThread(() => { second = SingleInstance.TryAcquire(id, () => { }); if (second is null) SingleInstance.SignalExisting(id); });
         Assert.Null(second);
         Assert.True(activated.Wait(TimeSpan.FromSeconds(5)), "första instansen fick ingen signal");
     }

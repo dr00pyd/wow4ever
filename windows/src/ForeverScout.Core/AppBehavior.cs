@@ -24,7 +24,7 @@ public sealed class SingleInstance : IDisposable
 
     /// <summary>
     /// Försöker bli den enda instansen. Lyckas det returneras en instans som anropar <paramref name="onActivate"/>
-    /// när någon annan startar programmet. Annars signaleras den befintliga instansen och null returneras.
+    /// när någon annan (även en äldre version) signalerar händelsen. Annars returneras null.
     /// <paramref name="waitForPrevious"/> används efter en uppdatering (den gamla processen håller på att avslutas).
     /// </summary>
     public static SingleInstance? TryAcquire(string id, Action onActivate, TimeSpan? waitForPrevious = null)
@@ -35,8 +35,9 @@ public sealed class SingleInstance : IDisposable
         catch (AbandonedMutexException) { got = true; }
         if (!got)
         {
+            // Ingen automatisk signal längre (1.0.3): nykomlingen frågar först via Takeover-pipen och signalerar
+            // bara själv om det behövs. Äldre instanser (1.0.0–1.0.2) lyssnar fortfarande på händelsen.
             mutex.Dispose();
-            SignalExisting(id);
             return null;
         }
         var ev = new EventWaitHandle(false, EventResetMode.AutoReset, EventName(id));

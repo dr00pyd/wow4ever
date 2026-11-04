@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    Variant av klienten (samma kod): -p:ScoutVariant=full (standard) eller -p:ScoutVariant=lite.
+      full = fristående (self-contained) single-file exe, inget att installera (~105 MB).
+      lite = ramverksberoende single-file exe (~2 MB), kräver .NET 10 Desktop Runtime.
+    Båda: win-x64, ingen komprimering/packning, ingen trimning. Konstanten SCOUT_LITE styr BuildInfo.Variant.
+  -->
+  <PropertyGroup>
+    <ScoutVariant Condition="'$(ScoutVariant)' == ''">full</ScoutVariant>
+    <!-- Egna obj/bin per variant, så att ett inkrementellt bygge aldrig blandar ihop SCOUT_LITE och full. -->
+    <BaseIntermediateOutputPath>obj\$(ScoutVariant)\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\$(ScoutVariant)\</BaseOutputPath>
+    <!-- Den andra variantens obj/bin får aldrig räknas som källkod. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

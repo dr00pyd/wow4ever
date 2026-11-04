@@ -280,6 +280,7 @@ internal sealed class MainForm : Form
         _gearMenu.Items.Add(S("menu.terms"), null, (_, _) => Links.Open(_app.Api, Links.Terms(_app.Api)));
         _gearMenu.Items.Add(S("menu.privacy"), null, (_, _) => Links.Open(_app.Api, Links.Privacy(_app.Api)));
         _gearMenu.Items.Add(S("menu.report"), null, (_, _) => Links.Open(_app.Api, Links.Report(_app.Api)));
+        _gearMenu.Items.Add(S("menu.about"), null, (_, _) => _app.ShowAbout());
         _gearMenu.Items.Add(new ToolStripSeparator());
         _gearMenu.Items.Add(S("menu.exit"), null, (_, _) => _app.Exit());
     }

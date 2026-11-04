@@ -5,7 +5,8 @@ using System.Text.RegularExpressions;
 
 namespace ForeverScout.Core;
 
-public enum ReleaseKind { Client, Addon }
+/// <summary>Client = fristående (full) exe, Lite = ramverksberoende exe (kräver .NET 10 Desktop Runtime), Addon = addon-zip.</summary>
+public enum ReleaseKind { Client, Addon, Lite }
 
 public sealed record ReleaseFile(ReleaseKind Kind, string Version, string FileName, string Sha256, string Signature);
 
@@ -16,12 +17,18 @@ public sealed class SignedRelease
     public string? Addon { get; init; }
     public ReleaseFile? ClientFile { get; init; }
     public ReleaseFile? AddonFile { get; init; }
+    /// <summary>Lite-varianten (bara från signature2-formatet; null annars).</summary>
+    public string? Lite { get; init; }
+    public ReleaseFile? LiteFile { get; init; }
     public string? Issued { get; init; }
+    /// <summary>Verifierades svaret med signature2 (utökat fältset) eller bara den gamla signaturen?</summary>
+    public bool HasSignature2 { get; init; }
     /// <summary>Spärrade addonversioner. Inte signerat (servern kan lägga till via miljövariabel) – används bara
     /// för att avgöra när en signerad addon ska hämtas, aldrig för att godta något.</summary>
     public IReadOnlyList<string> BlockedAddons { get; init; } = [];
 
-    public ReleaseFile? File(ReleaseKind k) => k == ReleaseKind.Client ? ClientFile : AddonFile;
+    public ReleaseFile? File(ReleaseKind k) => k switch { ReleaseKind.Client => ClientFile, ReleaseKind.Lite => LiteFile, _ => AddonFile };
+    public string? VersionOf(ReleaseKind k) => k switch { ReleaseKind.Client => Client, ReleaseKind.Lite => Lite, _ => Addon };
     public bool IsAddonBlocked(string? version) => version != null && BlockedAddons.Contains(version);
 }
 
@@ -32,14 +39,28 @@ public sealed class SignedRelease
 /// <see cref="SignedFields"/> – nycklarna i bokstavsordning, utan blanksteg, saknat fält = <c>null</c>, värdena
 /// serialiserade som i <c>JSON.stringify</c>. Övriga fält i svaret (clientUrl, addonUrl, blockedAddons …) ingår inte.</para>
 ///
-/// <para><b>Filsignaturen</b> (<c>clientSig</c>/<c>addonSig</c>) gäller UTF-8-texten
-/// <c>"ForeverScout-file/v1\n&lt;client|addon&gt;\n&lt;version&gt;\n&lt;sha256 hex gemener&gt;"</c>, så att en addon-zip
-/// inte kan utges för en exe eller för en annan version. Samma format i <c>scripts/scout-sign.mjs</c>.</para>
+/// <para><b>signature2</b> (från 1.0.3) gäller samma kanoniska form men över <see cref="SignedFields2"/> = de gamla fälten
+/// plus <c>lite, liteFile, liteSha256, liteSig</c> och <c>setup, setupFile, setupSha256, setupSig</c>. Den gamla <c>signature</c> lämnas orörd så att klienter 1.0.0–1.0.2
+/// (som bara känner till <see cref="SignedFields"/>) fortsätter att verifiera och uppdatera till full-exe:n.
+/// Nya klienter: finns signature2 MÅSTE den stämma (ingen reserv till den gamla); saknas den används den gamla
+/// signaturen och lite-fälten ignoreras.</para>
+///
+/// <para><b>Filsignaturen</b> (<c>clientSig</c>/<c>liteSig</c>/<c>addonSig</c>) gäller UTF-8-texten
+/// <c>"ForeverScout-file/v1\n&lt;client|lite|addon&gt;\n&lt;version&gt;\n&lt;sha256 hex gemener&gt;"</c>, så att en fil
+/// inte kan utges för en annan typ eller version. Samma format i <c>scripts/scout-sign.mjs</c>.</para>
 /// </summary>
 public static partial class ReleaseVerifier
 {
     public static readonly string[] SignedFields =
         ["addon", "addonFile", "addonSha256", "addonSig", "client", "clientFile", "clientSig", "issued", "sha256", "v"];
+
+    /// <summary>
+    /// Fälten för signature2: de gamla plus lite- och setup-fälten, i bokstavsordning. Setup (installationsprogrammet)
+    /// används inte av klienten, men ingår i signaturen så att nedladdningssidans uppgifter är signerade.
+    /// </summary>
+    public static readonly string[] SignedFields2 =
+        ["addon", "addonFile", "addonSha256", "addonSig", "client", "clientFile", "clientSig", "issued", "lite", "liteFile", "liteSha256", "liteSig",
+         "setup", "setupFile", "setupSha256", "setupSig", "sha256", "v"];
 
     public const int FormatVersion = 1;
 
@@ -57,11 +78,13 @@ public static partial class ReleaseVerifier
     /// <summary>Finns en riktig publik nyckel inbyggd (inte platshållaren)?</summary>
     public static bool HasKey(string? pem) => pem != null && pem.Contains("-----BEGIN PUBLIC KEY-----", StringComparison.Ordinal);
 
-    public static string Canonical(JsonElement root)
+    public static string Canonical(JsonElement root) => Canonical(root, SignedFields);
+
+    public static string Canonical(JsonElement root, IReadOnlyList<string> fields)
     {
         var sb = new StringBuilder("{");
         bool first = true;
-        foreach (var name in SignedFields)
+        foreach (var name in fields)
         {
             if (!first) sb.Append(',');
             first = false;
@@ -103,7 +126,9 @@ public static partial class ReleaseVerifier
     }
 
     public static byte[] FileMessage(ReleaseKind kind, string version, string sha256) =>
-        Encoding.UTF8.GetBytes($"ForeverScout-file/v1\n{(kind == ReleaseKind.Client ? "client" : "addon")}\n{version}\n{sha256.ToLowerInvariant()}");
+        Encoding.UTF8.GetBytes($"ForeverScout-file/v1\n{KindName(kind)}\n{version}\n{sha256.ToLowerInvariant()}");
+
+    public static string KindName(ReleaseKind kind) => kind switch { ReleaseKind.Client => "client", ReleaseKind.Lite => "lite", _ => "addon" };
 
     private static ECDsa Key(string publicKeyPem)
     {
@@ -133,10 +158,20 @@ public static partial class ReleaseVerifier
         {
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new ApiException(ErrorCodes.BadResponse);
-            if (!root.TryGetProperty("signature", out var sigEl) || sigEl.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(sigEl.GetString()))
-                throw new ApiException(ErrorCodes.SignatureMissing);
-            var canonical = Encoding.UTF8.GetBytes(Canonical(root));
-            if (!VerifySig(key, canonical, sigEl.GetString())) throw new ApiException(ErrorCodes.SignatureInvalid);
+            static string? SigOf(JsonElement r, string n) =>
+                r.TryGetProperty(n, out var e) && e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()) ? e.GetString() : null;
+            bool v2 = SigOf(root, "signature2") is not null;
+            if (v2)
+            {
+                // Nytt format: signature2 över det utökade fältsetet måste stämma. Ingen reserv till den gamla.
+                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields2)), SigOf(root, "signature2")))
+                    throw new ApiException(ErrorCodes.SignatureInvalid);
+            }
+            else
+            {
+                var old = SigOf(root, "signature") ?? throw new ApiException(ErrorCodes.SignatureMissing);
+                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields)), old)) throw new ApiException(ErrorCodes.SignatureInvalid);
+            }
 
             string? Str(string n) => root.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
             if (!(root.TryGetProperty("v", out var ver) && ver.ValueKind == JsonValueKind.Number && ver.TryGetInt32(out var fv) && fv == FormatVersion))
@@ -166,6 +201,10 @@ public static partial class ReleaseVerifier
                 Addon = Str("addon"),
                 ClientFile = FileOf(ReleaseKind.Client, "client", "clientFile", "sha256", "clientSig"),
                 AddonFile = FileOf(ReleaseKind.Addon, "addon", "addonFile", "addonSha256", "addonSig"),
+                // Lite-fälten är bara signerade av signature2 – utan den ignoreras de.
+                Lite = v2 ? Str("lite") : null,
+                LiteFile = v2 ? FileOf(ReleaseKind.Lite, "lite", "liteFile", "liteSha256", "liteSig") : null,
+                HasSignature2 = v2,
                 Issued = Str("issued"),
                 BlockedAddons = blocked,
             };

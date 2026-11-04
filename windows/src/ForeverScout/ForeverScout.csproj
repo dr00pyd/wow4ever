@@ -15,9 +15,9 @@
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
 
     <!-- Versionsinfo i exe:n (minskar AV-falsklarm). -->
-    <Version>1.0.2</Version>
-    <FileVersion>1.0.2.0</FileVersion>
-    <AssemblyVersion>1.0.2.0</AssemblyVersion>
+    <Version>1.0.3</Version>
+    <FileVersion>1.0.3.0</FileVersion>
+    <AssemblyVersion>1.0.3.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>
@@ -30,6 +30,7 @@
          och ger AV-falsklarm), inga packers, ingen trimning, ingen obfuskering. -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
+    <SelfContained Condition="'$(ScoutVariant)' == 'lite'">false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
@@ -37,6 +38,9 @@
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>sv;en</SatelliteResourceLanguages>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <DefineConstants Condition="'$(ScoutVariant)' == 'lite'">$(DefineConstants);SCOUT_LITE</DefineConstants>
+    <!-- Lite: saknas .NET 10 Desktop Runtime visar apphosten Windows standarddialog med nedladdningslänk. -->
+    <RollForward Condition="'$(ScoutVariant)' == 'lite'">LatestMinor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
