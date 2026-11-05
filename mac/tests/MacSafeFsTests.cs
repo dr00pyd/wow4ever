@@ -148,6 +148,21 @@ public sealed class UnixInstanceTests : IDisposable
     }
 
     [Fact]
+    public void TooLongSocketPathKeepsTheLockButNoSocket()
+    {
+        // macOS: högst 104 byte i en socketsökväg. Längre (mycket långt användarnamn) → bara låset, ingen krasch.
+        var dir = Path.Combine(UnixInstance.DirOverride!, new string('x', UnixInstance.MaxSocketPathBytes));
+        SafeFs.CreateDirectory(dir);
+        UnixInstance.DirOverride = dir;
+        Assert.False(UnixInstance.SocketUsable(Path.Combine(dir, "instance.sock")));
+        using var first = UnixInstance.TryAcquire();
+        Assert.NotNull(first);
+        first!.Listen(_ => TakeoverDecision.Show, _ => { });
+        Assert.Null(UnixInstance.TryAcquire());
+        Assert.Equal(TakeoverOutcome.NoAnswer, UnixInstance.Request(new TakeoverRequest("1.0.6", "/x"), TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
     public void NobodyListeningGivesNoAnswer() =>
         Assert.Equal(TakeoverOutcome.NoAnswer, UnixInstance.Request(new TakeoverRequest("1.0.6", "/x"), TimeSpan.FromSeconds(1)));
 

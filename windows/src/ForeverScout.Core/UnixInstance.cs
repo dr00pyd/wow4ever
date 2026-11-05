@@ -31,13 +31,20 @@ public sealed class UnixInstance : IDisposable
     private static string Lock => DirOverride is { } d ? Path.Combine(d, "instance.lock") : LockPath;
     private static string Sock => DirOverride is { } d ? Path.Combine(d, "instance.sock") : SocketPath;
 
+    /// <summary>
+    /// macOS tillåter högst 104 byte (inklusive NUL) i en Unix-sockets sökväg. Är sökvägen längre (mycket långt
+    /// användarnamn) blir det bara låset: en andra start avslutar sig utan att kunna be den körande visa fönstret.
+    /// </summary>
+    internal const int MaxSocketPathBytes = 103;
+    internal static bool SocketUsable(string path) => Encoding.UTF8.GetByteCount(path) <= MaxSocketPathBytes;
+
     private readonly IDisposable _lock;
-    private readonly Socket _server;
-    private readonly string _socketPath;
+    private readonly Socket? _server;
+    private readonly string? _socketPath;
     private readonly CancellationTokenSource _cts = new();
     private int _disposed;
 
-    private UnixInstance(IDisposable fileLock, Socket server, string socketPath)
+    private UnixInstance(IDisposable fileLock, Socket? server, string? socketPath)
     {
         _lock = fileLock;
         _server = server;
@@ -61,6 +68,7 @@ public sealed class UnixInstance : IDisposable
         {
             // Vi håller låset, så ingen annan lyssnar: en kvarbliven socketfil (efter en krasch) tas bort.
             var sock = SafeFs.Check(Sock, SafeFs.Access.Write, isDir: false);
+            if (!SocketUsable(sock)) return new UnixInstance(held, null, null);
             SafeFs.DeleteFile(sock);
             var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             try
@@ -84,13 +92,14 @@ public sealed class UnixInstance : IDisposable
     /// </summary>
     public void Listen(Func<TakeoverRequest, TakeoverDecision> decide, Action<TakeoverDecision> act)
     {
+        if (_server is not { } server) return;
         var ct = _cts.Token;
         _ = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
                 Socket client;
-                try { client = await _server.AcceptAsync(ct); }
+                try { client = await server.AcceptAsync(ct); }
                 catch (OperationCanceledException) { return; }
                 catch (ObjectDisposedException) { return; }
                 catch (SocketException) { await Task.Delay(200); continue; }
@@ -123,6 +132,7 @@ public sealed class UnixInstance : IDisposable
         {
             // Ingen filåtkomst: bara adressen (en fast sökväg i den egna appdatakatalogen, 0700) att ansluta till.
             var sock = Sock;
+            if (!SocketUsable(sock)) return TakeoverOutcome.NoAnswer;
             using var cts = new CancellationTokenSource(timeout);
             using var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             s.ConnectAsync(new UnixDomainSocketEndPoint(sock), cts.Token).AsTask().GetAwaiter().GetResult();
@@ -136,7 +146,7 @@ public sealed class UnixInstance : IDisposable
             var answer = Encoding.ASCII.GetString(buf, 0, read).Trim();
             return answer switch { "exit" => TakeoverOutcome.TakeOver, "show" => TakeoverOutcome.Shown, _ => TakeoverOutcome.NoAnswer };
         }
-        catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException or SafeFsException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException or SafeFsException or UnauthorizedAccessException or ArgumentException)
         {
             return TakeoverOutcome.NoAnswer;
         }
@@ -146,8 +156,9 @@ public sealed class UnixInstance : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
-        _server.Dispose();
-        try { SafeFs.DeleteFile(_socketPath); } catch (IOException) { } catch (SafeFsException) { } catch (UnauthorizedAccessException) { }
+        _server?.Dispose();
+        if (_socketPath is not null)
+            try { SafeFs.DeleteFile(_socketPath); } catch (IOException) { } catch (SafeFsException) { } catch (UnauthorizedAccessException) { }
         _lock.Dispose();
         _cts.Dispose();
     }
