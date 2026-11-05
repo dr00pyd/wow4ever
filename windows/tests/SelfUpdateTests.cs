@@ -187,3 +187,33 @@ public sealed class SelfUpdateTests : IDisposable
         Assert.Equal(allowed, ok);
     }
 }
+
+public class UpdateNoticeTests
+{
+    [Theory]
+    [InlineData("1.0.5", "1.0.5", "1.0.6", true, true, "1.0.5")]   // markör satt av 1.0.5→1.0.6 (framtida väg)
+    [InlineData(null, "1.0.6", "1.0.7", false, true, "1.0.6")]     // annan version än förra körningen
+    [InlineData(null, null, "1.0.6", true, true, null)]            // omstart från en klient ≤ 1.0.5 (ingen markör)
+    [InlineData(null, "1.0.6", "1.0.6", true, false, null)]        // språkbyte/omstart av samma version
+    [InlineData(null, null, "1.0.6", false, false, null)]          // vanlig start (t.ex. ny installation)
+    [InlineData(null, "1.0.6", "1.0.6", false, false, null)]       // vanlig start, samma version
+    public void Detects_update_after_restart(string? marker, string? lastRun, string current, bool restarted, bool updated, string? from)
+    {
+        var r = SelfUpdater.DetectUpdate(marker, lastRun, current, restarted);
+        Assert.Equal(updated, r.Updated);
+        Assert.Equal(from, r.From);
+    }
+
+    [Fact]
+    public void Update_notice_texts_exist_in_both_languages()
+    {
+        try
+        {
+            Strings.Apply("sv");
+            Assert.Equal("Uppdaterad till 1.0.6 ✓", Strings.F("updated.to", "1.0.6"));
+            Strings.Apply("en");
+            Assert.Equal("Updated to 1.0.6 ✓", Strings.F("updated.to", "1.0.6"));
+        }
+        finally { Strings.Apply("sv"); }
+    }
+}

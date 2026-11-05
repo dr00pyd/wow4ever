@@ -379,12 +379,17 @@ internal sealed class ScoutApp : ApplicationContext
             await Task.Run(() => SelfUpdater.Stage(exe));
             if (MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
-                await Task.Run(() => SelfUpdater.Swap());
+                // Markör för den nya versionen: visa fönstret och "Uppdaterad till …" efter omstarten.
+                Settings.JustUpdatedFrom = SelfUpdater.CurrentVersion.ToString(3);
+                Settings.Save();
+                try { await Task.Run(() => SelfUpdater.Swap()); }
+                catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.Save(); throw; }
                 UploadLog.Append("update", exe.Length, ApiClient.Sha256Hex(exe), $"ok swapped to {newVersion}");
                 Settings.UpdateFailures = 0;
                 Settings.Save();
-                if (!StartNewInstance())
-                    throw new UpdateStepException(UpdateSteps.Restart, new InvalidOperationException("start failed"), Path.GetFileName(SelfUpdater.CurrentExe));
+                // Avsluta bara om den nya processen verkligen startade och lever efter ~2 s (den väntar då på mutexen).
+                if (!await StartNewInstanceVerifiedAsync())
+                    throw new UpdateStepException(UpdateSteps.Restart, new InvalidOperationException("new process did not start"), Path.GetFileName(SelfUpdater.CurrentExe));
                 Exit();
             }
         }
@@ -399,7 +404,7 @@ internal sealed class ScoutApp : ApplicationContext
             var msg = ux.Step switch
             {
                 UpdateSteps.Download => F("update.download", Error(ux.InnerException!)),
-                UpdateSteps.Restart => S("update.restart"),
+                UpdateSteps.Restart => S("update.notstarted"),
                 _ when ux.FileInUse => S("update.inuse"),
                 _ => F("update.fail", ux.Diagnostic),
             };
@@ -518,6 +523,36 @@ internal sealed class ScoutApp : ApplicationContext
     /// Startar exe:n på samma sökväg (efter Swap är det den nya filen) med --restarted: den nya instansen väntar då
     /// upp till 10 s på mutexen tills den här processen avslutats (Exit → Application.Run returnerar → mutexen släpps).
     /// </summary>
+    /// <summary>Startar den nya exe:n och kontrollerar att processen fortfarande lever efter ~2 s.</summary>
+    private static async Task<bool> StartNewInstanceVerifiedAsync()
+    {
+        System.Diagnostics.Process? p;
+        try { p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(SelfUpdater.CurrentExe) { UseShellExecute = false, Arguments = "--restarted" }); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or ScoutException) { return false; }
+        if (p is null) return false;
+        using (p)
+        {
+            bool exited = await Task.Run(() => p.WaitForExit(2000));
+            if (exited) UploadLog.Append("update", 0, "-", $"fail step=restart new process exited code={p.ExitCode}");
+            return !exited;
+        }
+    }
+
+    /// <summary>
+    /// Efter en uppdatering: fönstret fram, "Uppdaterad till …" i fönstret och som ballong, och en rad i lägerjournalen
+    /// och uploads.log. <paramref name="from"/> = den gamla versionen (null om okänd, t.ex. uppdaterad från ≤ 1.0.5).
+    /// </summary>
+    public void AnnounceUpdate(string? from)
+    {
+        var to = SelfUpdater.CurrentVersion.ToString(3);
+        ShowWindow();
+        var now = When(DateTime.UtcNow);
+        Log(from is null ? F("journal.updated.to", now, to) : F("journal.updated", now, from, to), Theme.Ok);
+        UploadLog.Append("update", 0, "-", from is null ? $"updated to {to}" : $"updated from {from} to {to}");
+        _form?.Flash(F("updated.to", to), 15000);
+        _tray.ShowBalloonTip(8000, "Forever Scout", F("updated.to", to), ToolTipIcon.Info);
+    }
+
     private static bool StartNewInstance()
     {
         try

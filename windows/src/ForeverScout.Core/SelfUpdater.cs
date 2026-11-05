@@ -99,6 +99,18 @@ public static class SelfUpdater
 
     public static bool HasStaged => SafeFs.FileExists(NewExe);
 
+    /// <summary>
+    /// Har appen just uppdaterats? Markören (1.0.6+, sätts före Swap) eller en annan version än förra körningen ger
+    /// "uppdaterad från X". En omstart (--restarted) utan känd tidigare version (uppdaterad från en klient ≤ 1.0.5, som
+    /// inte skriver LastRunVersion) ger "uppdaterad" utan X. En vanlig omstart av samma version (t.ex. språkbyte) gör inte det.
+    /// </summary>
+    public static (bool Updated, string? From) DetectUpdate(string? justUpdatedFrom, string? lastRunVersion, string current, bool restarted)
+    {
+        var from = justUpdatedFrom ?? (lastRunVersion is { } last && last != current ? last : null);
+        if (from == current) from = null;
+        return (from != null || (restarted && lastRunVersion is null), from);
+    }
+
     /// <summary>Byter filer; anroparen startar sedan den nya exe:n och avslutar sig själv.</summary>
     public static void Swap() => Swap(DateTime.Now);
 

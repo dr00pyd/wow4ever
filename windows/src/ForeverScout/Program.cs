@@ -18,7 +18,9 @@ internal static class Program
 
         ScoutApp? app = null;
         void Activate() => app?.OnUi(() => app.ShowWindow());
-        var instance = SingleInstance.TryAcquire(InstanceId, Activate, args.Contains("--restarted") ? TimeSpan.FromSeconds(10) : null);
+        bool restarted = args.Contains("--restarted");
+        // Efter en uppdatering/omstart: vänta på att den gamla processen släpper mutexen (den avslutar sig själv).
+        var instance = SingleInstance.TryAcquire(InstanceId, Activate, restarted ? TimeSpan.FromSeconds(30) : null);
 
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.Dark);
@@ -38,7 +40,9 @@ internal static class Program
                 case TakeoverOutcome.Shown:
                     return 0; // den körande instansen visar sitt fönster
                 default:
-                    // Ingen svarar: en äldre version (1.0.0–1.0.2) som inte kan lämna över. Säg det tydligt.
+                    // Ingen svarar: en äldre version (1.0.0–1.0.4) som inte kan lämna över. Inte tyst: be den visa sitt
+                    // fönster och säg tydligt vad som händer.
+                    SingleInstance.SignalExisting(InstanceId);
                     MessageBox.Show(Strings.S("takeover.old"), "Forever Scout", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return 0;
             }
@@ -70,10 +74,18 @@ internal static class Program
             InstanceId,
             req => Takeover.Decide(BuildInfo.Version, Environment.ProcessPath ?? "", req),
             decision => scout.OnUi(() => { if (decision == TakeoverDecision.Exit) scout.Exit(); else scout.ShowWindow(); }));
-        bool showWindow = firstRun || shots; // annars: bara ikonen i fältet
+        // Uppdaterad? Markören (1.0.6+) eller en annan version än förra körningen – eller en omstart från en äldre klient
+        // (≤ 1.0.5 sätter ingen markör men startar med --restarted). Då visas fönstret i stället för bara fältikonen.
+        var current = SelfUpdater.CurrentVersion.ToString(3);
+        var (updated, updatedFrom) = SelfUpdater.DetectUpdate(settings.JustUpdatedFrom, settings.LastRunVersion, current, restarted);
+        settings.JustUpdatedFrom = null;
+        settings.LastRunVersion = current;
+        settings.Save();
+        bool showWindow = firstRun || shots || restarted || updated; // annars: bara ikonen i fältet
         scout.OnUi(async () =>
         {
             if (shots) { await Screenshots.Run(scout); return; }
+            if (updated) scout.AnnounceUpdate(updatedFrom);
             await scout.StartAsync(showWindow);
         });
         Application.Run(scout);

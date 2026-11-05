@@ -51,6 +51,10 @@ public sealed class Settings
     public int? Rank { get; set; }
     /// <summary>Misslyckade självuppdateringar i rad (från 2 erbjuds nedladdningssidan). Nollas när en uppdatering lyckas.</summary>
     public int UpdateFailures { get; set; }
+    /// <summary>Sätts (till den gamla versionen) precis före Swap; den nya versionen visar då fönstret och "Uppdaterad till …".</summary>
+    public string? JustUpdatedFrom { get; set; }
+    /// <summary>Versionen som körde senast (1.0.6+). Skiljer den sig från den som körs nu har appen uppdaterats.</summary>
+    public string? LastRunVersion { get; set; }
     /// <summary>Från /api/bidrag/jag: poster som servern godtagit (summa av counts) resp. bekräftade (fältet "confirmed", om det finns).</summary>
     public int? AcceptedTotal { get; set; }
     public int? ConfirmedTotal { get; set; }

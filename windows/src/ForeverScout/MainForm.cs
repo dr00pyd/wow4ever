@@ -436,10 +436,11 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>Kort besked i statusraden (t.ex. "Inget nytt att ladda upp").</summary>
-    public void Flash(string text)
+    public void Flash(string text, int ms = 6000)
     {
         _flash = text;
         _flashTimer.Stop();
+        _flashTimer.Interval = ms;
         _flashTimer.Start();
         ShowStatus();
     }

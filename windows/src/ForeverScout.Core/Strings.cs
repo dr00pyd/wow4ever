@@ -111,6 +111,10 @@ public static class Strings
         ["update.inuse"] = ("Kunde inte ersätta ForeverScout.exe (filen används av ett annat program, t.ex. antivirus). Försök igen om en stund.", "Could not replace ForeverScout.exe (the file is in use by another program, e.g. antivirus). Please try again in a moment."),
         ["update.download"] = ("Den nya versionen kunde inte hämtas: {0}", "The new version could not be downloaded: {0}"),
         ["update.restart"] = ("Den nya versionen är på plats men kunde inte startas. Starta Forever Scout igen.", "The new version is in place but could not be started. Please start Forever Scout again."),
+        ["updated.to"] = ("Uppdaterad till {0} ✓", "Updated to {0} ✓"),
+        ["journal.updated"] = ("{0}: uppdaterad från {1} till {2}", "{0}: updated from {1} to {2}"),
+        ["journal.updated.to"] = ("{0}: uppdaterad till {1}", "{0}: updated to {1}"),
+        ["update.notstarted"] = ("Den nya versionen startade inte. Forever Scout fortsätter med den gamla – försök igen, eller hämta den nya versionen från nedladdningssidan.", "The new version did not start. Forever Scout keeps running the old one – try again, or get the new version from the download page."),
         ["update.openpage"] = ("Självuppdateringen har misslyckats flera gånger. Vill du öppna nedladdningssidan och hämta den nya versionen där?", "Self-update has failed several times. Do you want to open the download page and get the new version there?"),
         ["journal.updatefail"] = ("{0}: uppdateringen misslyckades ({1})", "{0}: update failed ({1})"),
         // Första start
