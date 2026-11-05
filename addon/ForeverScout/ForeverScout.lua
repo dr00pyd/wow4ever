@@ -10,7 +10,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.1"
+local VERSION = "1.0.2"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -518,18 +518,36 @@ local function onQuestDetail()
   end)
 end
 
+-- Questens nivå ur questloggen. Fungerar även för quests som startas från ett föremål eller en leverans
+-- (t.ex. 3364), där QUEST_DETAIL saknar nivå: prova C_QuestLog.GetInfo, sedan Classic-API:t
+-- GetQuestLogIndexByID/GetQuestLogTitle och sist C_QuestLog.GetQuestDifficultyLevel.
+local function questLogLevel(id)
+  local QL = C_QuestLog
+  local idx = QL and num(try(QL.GetLogIndexForQuestID, id))
+  local info = QL and idx and try(QL.GetInfo, idx)
+  if type(info) == "table" then
+    local lvl = num(info.level)
+    if lvl and lvl > 0 then return lvl, str(info.title) end
+  end
+  idx = idx or num(try(GetQuestLogIndexByID, id))
+  if idx and idx > 0 then
+    local title, level = try(GetQuestLogTitle, idx)
+    level = num(level)
+    if level and level > 0 then return level, str(title) end
+  end
+  local lvl = QL and num(try(QL.GetQuestDifficultyLevel, id))
+  if lvl and lvl > 0 then return lvl, nil end
+  return nil, nil
+end
+
 local function onQuestAccepted(a, b)
   local id = num(b) or num(a)
-  if not id or id <= 0 or not C_QuestLog then return end
+  if not id or id <= 0 then return end
   questUpdate(id, function(rec)
-    local idx = num(try(C_QuestLog.GetLogIndexForQuestID, id))
-    local info = idx and try(C_QuestLog.GetInfo, idx)
-    if type(info) == "table" then
-      rec.title = str(info.title) or rec.title
-      local lvl = num(info.level)
-      if lvl and lvl > 0 then rec.lvl = lvl end
-    end
-    local objs = try(C_QuestLog.GetQuestObjectives, id)
+    local lvl, title = questLogLevel(id)
+    if lvl then rec.lvl = lvl end
+    rec.title = title or rec.title
+    local objs = C_QuestLog and try(C_QuestLog.GetQuestObjectives, id)
     if type(objs) == "table" and #objs > 0 then
       local list = {}
       for _, o in ipairs(objs) do
@@ -715,7 +733,10 @@ local function initDb()
   db = ForeverScoutDB
   db.v = FORMAT
   db.addon = VERSION
-  db.build = str((try(GetBuildInfo))) or db.build
+  -- Hela byggsträngen, t.ex. "1.60.1.70790" (GetBuildInfo: version, build, datum, interface).
+  local version, build = try(GetBuildInfo)
+  version, build = str(version), str(build) or (num(build) and tostring(build))
+  db.build = (version and build and (version .. "." .. build)) or version or db.build
   db.locale = str(try(GetLocale)) or db.locale
   if type(db.install) ~= "string" or #db.install < 8 then db.install = newInstallId() end
   db.seq = tonumber(db.seq) or 0

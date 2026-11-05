@@ -10,6 +10,8 @@ public sealed class SyncReport
     public int FilesIncomplete { get; set; }
     /// <summary>Filer som innehåller annat än exakt en global, ForeverScoutDB – vägras och skickas aldrig.</summary>
     public int FilesRefused { get; set; }
+    /// <summary>Filer som servern avvisade (4xx, t.ex. bad-file). Räknas inte som uppladdade – skickas igen senare.</summary>
+    public int FilesRejected { get; set; }
     public int HotfixStored { get; set; }
     public List<ConfirmedItem> NewConfirmed { get; } = new();
     /// <summary>Fel som ska visas (översätts med <see cref="Strings.Error"/>).</summary>
@@ -84,7 +86,17 @@ public sealed class Uploader(ApiClient api, Settings settings)
                 try { res = await api.UploadAsync(bytes, ct); }
                 catch (ApiException ex)
                 {
-                    UploadLog.Append("ladda-upp", bytes.Length, sha, "error:" + ex.Code + (ex.Status is { } st ? ":" + (int)st : ""));
+                    UploadLog.Append("ladda-upp", bytes.Length, sha, "error:" + ex.Code + (ex.Status is { } st ? ":" + (int)st : "")
+                        + (ex.ServerDetail is { } det ? " " + det : ""));
+                    if (ex.Rejected && ex.Code != ErrorCodes.AddonBlocked)
+                    {
+                        // Servern avvisade filen (t.ex. bad-file "Okänd eller saknad klientbuild"). Den markeras INTE som
+                        // uppladdad (UploadedSha/UploadedSeq rörs inte), så den skickas igen vid "Ladda upp", nästa start,
+                        // efter en versionskontroll och när filen ändras. Övriga filer fortsätter.
+                        report.FilesRejected++;
+                        report.Error = ex;
+                        continue;
+                    }
                     if (!(ex.FromServer && ex.Code == ErrorCodes.AddonBlocked)) throw;
                     report.FilesBlocked++;
                     report.AddonBlocked = true;
@@ -120,7 +132,8 @@ public sealed class Uploader(ApiClient api, Settings settings)
                     try { res = await api.UploadHotfixAsync(bytes, ct); }
                     catch (ApiException ex)
                     {
-                        UploadLog.Append("hotfix", bytes.Length, sha, "error:" + ex.Code);
+                        UploadLog.Append("hotfix", bytes.Length, sha, "error:" + ex.Code + (ex.ServerDetail is { } det ? " " + det : ""));
+                        if (ex.Rejected) { report.Error ??= ex; continue; } // inte markerad som skickad – nytt försök senare
                         throw;
                     }
                     UploadLog.Append("hotfix", bytes.Length, sha, res.Stored ? "ok stored" : "ok duplicate");
@@ -129,6 +142,7 @@ public sealed class Uploader(ApiClient api, Settings settings)
                     settings.Save();
                 }
 
+            // Inga nätfel: nollställ backoff-kön (ett avvisat svar är inte ett nätfel och schemalägger inget).
             settings.RetryAttempts = 0;
             settings.NextRetryUtc = null;
             settings.Save();

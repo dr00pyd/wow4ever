@@ -38,6 +38,8 @@ public sealed class SyncTests : IDisposable
         public List<HttpRequestMessage> Requests { get; } = new();
         public List<byte[]> Bodies { get; } = new();
         public TimeSpan Delay = TimeSpan.Zero;
+        /// <summary>Om satt: svar för ladda-upp nr n (1-baserat); null = vanligt OK-svar.</summary>
+        public Func<int, HttpResponseMessage?>? Respond;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
         {
@@ -51,6 +53,7 @@ public sealed class SyncTests : IDisposable
                     Requests.Add(req);
                     if (req.Content != null) Bodies.Add(req.Content.ReadAsByteArrayAsync(ct).Result);
                     if (req.RequestUri!.AbsolutePath.EndsWith("ladda-upp")) Posts++;
+                    if (req.RequestUri!.AbsolutePath.EndsWith("ladda-upp") && Respond?.Invoke(Posts) is { } custom) return custom;
                 }
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -65,7 +68,11 @@ public sealed class SyncTests : IDisposable
     {
         var srv = new FakeServer();
         var api = new ApiClient("https://guide.wow4ever.se", srv) { Key = "k" };
-        var set = new Settings { UploadHotfix = false };
+        // Riktig inställningsfil i testernas appdata (Save måste fungera), men utan tillstånd från tidigare tester.
+        var set = Settings.Load();
+        set.UploadHotfix = false;
+        set.UploadedSha.Clear(); set.UploadedSeq.Clear(); set.HotfixSha.Clear(); set.BlockedAddons.Clear();
+        set.RetryAttempts = 0; set.NextRetryUtc = null;
         return (new Uploader(api, set), srv, set);
     }
 
@@ -80,6 +87,84 @@ public sealed class SyncTests : IDisposable
         File.AppendAllText(_sv, "\n-- ny post\n");
         Assert.Equal(1, (await up.SyncAsync(_dir, force: false)).FilesUploaded);
         Assert.Equal(2, srv.Posts);
+    }
+
+    private static HttpResponseMessage BadFile() => new(HttpStatusCode.BadRequest)
+    {
+        Content = new StringContent("""{"error":"Filen kunde inte läsas som ForeverScout.lua.","code":"bad-file","detail":"Okänd eller saknad klientbuild"}""", Encoding.UTF8, "application/json"),
+    };
+
+    [Fact]
+    public async Task RejectedFileIsNotMarkedUploadedAndIsRetried()
+    {
+        var (up, srv, set) = NewUploader();
+        srv.Respond = n => n == 1 ? BadFile() : null; // servern avvisar första gången, godtar sedan (t.ex. efter en serverfix)
+        var first = await up.SyncAsync(_dir, force: false);
+        Assert.Equal(1, first.FilesRejected);
+        Assert.Equal(0, first.FilesUploaded);
+        Assert.False(first.WillRetry);                    // inget nätfel → ingen backoff-kö
+        Assert.Empty(set.UploadedSha);                    // INTE markerad som uppladdad
+        Assert.Empty(set.UploadedSeq);
+        var ex = Assert.IsType<ApiException>(first.Error);
+        Assert.Equal("bad-file", ex.Code);
+        Assert.Equal("Okänd eller saknad klientbuild", ex.ServerDetail);
+        // Samma, oförändrade fil skickas igen vid nästa försök ("Ladda upp", nästa start, efter versionskontroll).
+        var second = await up.SyncAsync(_dir, force: false);
+        Assert.Equal(1, second.FilesUploaded);
+        Assert.Equal(2, srv.Posts);
+        Assert.NotEmpty(set.UploadedSha);
+        // … och därefter inte igen (sha256 oförändrad).
+        Assert.Equal(0, (await up.SyncAsync(_dir, force: false)).FilesUploaded);
+        Assert.Equal(2, srv.Posts);
+    }
+
+    [Fact]
+    public async Task RejectedFileDoesNotStopOtherAccounts()
+    {
+        var other = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(_sv)!)!, "..", "SECOND", "SavedVariables");
+        Directory.CreateDirectory(other);
+        File.WriteAllText(Path.Combine(other, "ForeverScout.lua"), LuaParserTests.Sample.Replace("a1b2c3d4", "e5f6a7b8"));
+        var (up, srv, set) = NewUploader();
+        srv.Respond = n => n == 1 ? BadFile() : null;
+        var r = await up.SyncAsync(_dir, force: false);
+        Assert.Equal(1, r.FilesRejected);
+        Assert.Equal(1, r.FilesUploaded);
+        Assert.Single(set.UploadedSha);
+    }
+
+    [Fact]
+    public void ServerDetailIsShownInBothLanguages()
+    {
+        var ex = new ApiException("bad-file", HttpStatusCode.BadRequest) { FromServer = true, ServerDetail = "Okänd eller saknad klientbuild" };
+        try
+        {
+            Strings.Apply("sv");
+            Assert.Equal("Servern avvisade filen: Okänd eller saknad klientbuild", Strings.Error(ex));
+            Strings.Apply("en");
+            Assert.Equal("The server rejected the file: Okänd eller saknad klientbuild", Strings.Error(ex));
+            var other = new ApiException("invalid", HttpStatusCode.BadRequest) { FromServer = true, ServerDetail = "x" };
+            Assert.Equal("Invalid request. (x)", Strings.Error(other));
+            Assert.Equal("The file could not be read as ForeverScout.lua.", Strings.Error(new ApiException("bad-file", HttpStatusCode.BadRequest) { FromServer = true }));
+        }
+        finally { Strings.Apply("sv"); }
+    }
+
+    [Fact]
+    public async Task ServerDetailIsParsedAndSanitized()
+    {
+        var srv = new FakeServer
+        {
+            Respond = _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("{\"code\":\"bad-file\",\"detail\":\"rad1\\nrad2\\t" + new string('x', 300) + "\"}", Encoding.UTF8, "application/json"),
+            },
+        };
+        using var api = new ApiClient("https://guide.wow4ever.se", srv) { Key = "k" };
+        var ex = await Assert.ThrowsAsync<ApiException>(() => api.UploadAsync(Encoding.UTF8.GetBytes("ForeverScoutDB = {}")));
+        Assert.True(ex.Rejected);
+        Assert.StartsWith("rad1 rad2 xxx", ex.ServerDetail);
+        Assert.True(ex.ServerDetail!.Length <= 201);
+        Assert.DoesNotContain('\n', ex.ServerDetail);
     }
 
     [Fact]

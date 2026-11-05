@@ -250,6 +250,8 @@ public static class Strings
         ["srv.not-dbcache"] = ("Filen är inte en giltig DBCache.bin.", "The file is not a valid DBCache.bin."),
         ["srv.unavailable"] = ("Insamlingen är tillfälligt avstängd.", "Collection is temporarily disabled."),
         ["srv.server"] = ("Serverfel.", "Server error."),
+        ["srv.bad-file.detail"] = ("Servern avvisade filen: {0}", "The server rejected the file: {0}"),
+        ["srv.detail"] = ("({0})", "({0})"),
         ["srv.unknown"] = ("Servern svarade med felet \"{0}\".", "The server returned the error \"{0}\"."),
     };
 
@@ -266,6 +268,9 @@ public static class Strings
     /// <summary>Text för ett fel på valt språk. Okända undantag visas aldrig med sitt (ev. svenska/OS-språkiga) meddelande.</summary>
     public static string Error(Exception ex) => ex switch
     {
+        // Serverns egen förklaring ("detail") visas efter vår text, t.ex. "Servern avvisade filen: Okänd eller saknad klientbuild".
+        ApiException { FromServer: true, Code: "bad-file", ServerDetail: { } d } => F("srv.bad-file.detail", d),
+        ApiException { FromServer: true, ServerDetail: { } d } a => (Has("srv." + a.Code) ? S("srv." + a.Code) : F("srv.unknown", a.Code)) + " " + F("srv.detail", d),
         ApiException { FromServer: true } a => Has("srv." + a.Code) ? S("srv." + a.Code) : F("srv.unknown", a.Code),
         ScoutException s when Has("err." + s.Code) => F("err." + s.Code, s.Detail ?? ""),
         IOException or UnauthorizedAccessException => S("err.io"),

@@ -3,7 +3,7 @@
 ForeverScout samlar in data om WoW: Forever-världen medan du spelar: var NPC:er står, vad tränare lär ut, vad försäljare säljer, quests, malmådror och örter, loot och flygpunkter. Datan laddas upp till [guide.wow4ever.se](https://guide.wow4ever.se/bidra) och visas i Forever-guiden. När minst två spelare har rapporterat samma sak räknas den som bekräftad.
 
 - Spel: WoW: Forever (klient 1.60.x, `## Interface: 16001`)
-- Version: 1.0.1
+- Version: 1.0.2
 - Filformat: `docs/briefs/SCOUT-KONTRAKT.md` §1 (`ForeverScoutDB`, `v = 1`)
 
 ## Installation

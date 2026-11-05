@@ -55,6 +55,14 @@ public sealed class ApiException(string code, HttpStatusCode? status = null, str
     public HttpStatusCode? Status { get; } = status;
     /// <summary>Kom koden från servern (fältet "code" i felsvaret)?</summary>
     public bool FromServer { get; init; }
+    /// <summary>
+    /// Serverns förklaring (fältet "detail", t.ex. "Okänd eller saknad klientbuild"), rensad och kortad. Visas för
+    /// användaren efter vår egen översatta text. Kommer från servern på svenska.
+    /// </summary>
+    public string? ServerDetail { get; init; }
+    /// <summary>Servern avvisade själva förfrågan (4xx med kod) – ett nytt försök med samma fil hjälper inte förrän
+    /// filen eller servern ändrats, men filen räknas aldrig som uppladdad.</summary>
+    public bool Rejected => FromServer && Status is { } s && (int)s >= 400 && (int)s < 500 && !Transient;
     /// <summary>Värt att försöka igen senare (nätfel, 5xx, 429).</summary>
     public bool Transient => transient || (Status is { } s && ((int)s >= 500 || s == HttpStatusCode.TooManyRequests || s == HttpStatusCode.RequestTimeout));
 }
@@ -142,10 +150,20 @@ public sealed class ApiClient : IDisposable
             var body = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() is { Length: > 0 and < 64 } code)
-                return new ApiException(code, resp.StatusCode) { FromServer = true };
+                return new ApiException(code, resp.StatusCode) { FromServer = true, ServerDetail = CleanDetail(doc.RootElement) };
         }
         catch { }
         return new ApiException(ErrorCodes.Http, resp.StatusCode);
+    }
+
+    /// <summary>"detail" som en enda rad utan styrtecken, högst 200 tecken.</summary>
+    internal static string? CleanDetail(JsonElement root)
+    {
+        if (!root.TryGetProperty("detail", out var d) || d.ValueKind != JsonValueKind.String) return null;
+        var t = new string((d.GetString() ?? "").Select(ch => char.IsControl(ch) ? ' ' : ch).ToArray()).Trim();
+        while (t.Contains("  ", StringComparison.Ordinal)) t = t.Replace("  ", " ", StringComparison.Ordinal);
+        if (t.Length == 0) return null;
+        return t.Length > 200 ? t[..200] + "…" : t;
     }
 
     private sealed class ContributorDto

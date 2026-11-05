@@ -359,6 +359,9 @@ internal sealed class ScoutApp : ApplicationContext
             Settings.BlockedAddons = release.BlockedAddons.ToList();
             Settings.Save();
             await UpdateAddon(release, force: false, interactive, announceBlocked: false);
+            // Efter en versionskontroll: försök igen med filer som servern tidigare avvisade (servern kan ha rättats).
+            // Oförändrade, redan uppladdade filer skickas inte (sha256), så detta kostar inget annars.
+            _sync.Notify();
             if (!interactive) return;
 
             // Varje variant uppdaterar sig från sin egen fil: full → clientFile, lite → liteFile.
