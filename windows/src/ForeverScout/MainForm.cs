@@ -273,7 +273,7 @@ internal sealed class MainForm : Form
         _gearMenu.Items.Add(S("menu.settings"), null, (_, _) => _app.OpenSettings(false));
         _gearMenu.Items.Add(S("menu.payload"), null, (_, _) => _app.ShowPayload());
         _gearMenu.Items.Add(S("menu.update"), null, async (_, _) => await _app.CheckUpdates(interactive: true));
-        _gearMenu.Items.Add(new ToolStripMenuItem(S("menu.login")) { Enabled = false }); // kommer snart
+        _gearMenu.Items.Add(S("menu.login"), null, async (_, _) => await _app.LinkWithBrowser(this));
         _gearMenu.Items.Add(new ToolStripSeparator());
         _gearMenu.Items.Add(S("menu.guide"), null, (_, _) => Links.Open(_app.Api, Links.Guide(_app.Api)));
         _gearMenu.Items.Add(S("menu.faq"), null, (_, _) => Links.Open(_app.Api, Links.Faq(_app.Api)));

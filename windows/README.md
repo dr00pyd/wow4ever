@@ -57,6 +57,9 @@ Dessutom rör appen den egna exe:n och `ForeverScout.new.exe`/`.old.exe` bredvid
 **Nätverk:** bara `https://guide.wow4ever.se`. I Release-byggen kan värden inte bytas: `FOREVERSCOUT_BASEURL` och
 `FOREVERSCOUT_DATADIR` fungerar bara i Debug-byggen, för test. Den enda trafiken är:
 - `POST /api/bidrag/registrera`, `POST /api/bidrag/koppla` (bara vid första start)
+- `POST /api/bidrag/enhet`, `POST /api/bidrag/enhet/status` (bara när du väljer "Logga in med webbläsaren", från 1.0.8:
+  `{ platform: "windows", version }` och sedan den hemliga `deviceCode` var `interval`:e sekund – ingen nyckel, inget
+  om datorn)
 - `POST /api/bidrag/ladda-upp`, `POST /api/bidrag/hotfix`
 - `GET /api/bidrag/jag`, `GET /api/bidrag/version`
 - `GET /scout/<signerad fil>`
@@ -114,10 +117,17 @@ katalogen flyttas med `FOREVERSCOUT_DATADIR`.
 Utformningen följer `inkorg/ui/BRIEF-UI-V1.md` och prototypen. Design tokens finns i `Theme` (`Support.cs`). De egenritade
 kontrollerna ligger i `Ui.cs`: rundade paneler, guldknappar med synlig tangentbordsfokus, inmatningsfält med guldram
 vid fokus och statuspiller.
-- **Onboarding** (`FirstRunForm`): "Slå dig ner vid elden." Registrering med visningsnamn är den primära handlingen.
-  Koppling med kod är tydligt separerad under den. Rutan till höger förklarar vilken data som delas och vad som gäller
-  för integriteten. Här finns ingen inloggningsknapp. "Logga in – kommer snart" finns bara utgråad i kugghjuls- och
-  fältmenyn. Om namnet är upptaget visas en knapp som hoppar till kodfältet.
+- **Onboarding** (`FirstRunForm`): "Slå dig ner vid elden." **Logga in med webbläsaren** (guldknappen, 1.0.8) är den
+  primära handlingen. Under den, som alternativ: välj ett visningsnamn, eller koppla med kod från sajten. Rutan till
+  höger förklarar vilken data som delas och vad som gäller för integriteten. Om namnet är upptaget visas en knapp som
+  hoppar till kodfältet.
+- **Logga in med webbläsaren** (`BrowserLinkForm`, flödet i `ForeverScout.Core/DeviceLink.cs`, kontraktet 2b):
+  appen hämtar en kod, öppnar `https://guide.wow4ever.se/bidra/koppla?kod=…` i webbläsaren och visar koden
+  (`XXXX-XXXX`) så att du kan jämföra med sidan, plus "Väntar på godkännande i webbläsaren …", "Öppna webbläsaren
+  igen" och Avbryt. Godkänner du på webben sparas nyckeln precis som efter koppling med kod (`ContributorStore.Save`:
+  DPAPI-filen, id och namn i `settings.json`). Sidan öppnas bara om adressen börjar exakt med
+  `https://guide.wow4ever.se/` (i Debug även loopback-basadressen); allt annat avvisas. Samma dialog nås från
+  kugghjuls- och fältmenyn och från Inställningar (där byter den kopplingen på den här datorn).
 - **Dashboard** (`MainForm`):
   - Tre översiktskort: insamlade poster, senaste uppladdning och poäng.
   - En tabell med kolumnerna Typ, Antal, Storlek, Status och Beskrivning. Status är ett av: ingen data hittad, väntar
@@ -148,7 +158,7 @@ vid fokus och statuspiller.
   igen". Svaret sparas och kan ändras i Inställningar. Avsluta i menyn stänger utan att fråga. Avstängning och
   utloggning i Windows och Aktivitetshanteraren stoppas aldrig (`CloseBehavior`).
 - Fältmenyn har den mörka Lägereld-stilen (`DarkMenuRenderer`) och innehåller: Öppna (fetstil), Ladda upp nu,
-  en statusrad, Logga in (utgråad), Pausa automatisk uppladdning, Sök efter uppdateringar, Forever-guiden,
+  en statusrad, Logga in med webbläsaren …, Pausa automatisk uppladdning, Sök efter uppdateringar, Forever-guiden,
   Inställningar och Avsluta.
 - Fältikonen har tre lägen: elden, elden med en amber ring som snurrar under uppladdning, och elden med en röd prick
   vid fel. Verktygstipset visar poäng och senaste status.

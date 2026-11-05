@@ -8,16 +8,17 @@ using static ForeverScout.Mac.Texts;
 namespace ForeverScout.Mac;
 
 /// <summary>
-/// Onboarding (UI V1): "Slå dig ner vid elden." Registrering med visningsnamn är den primära handlingen; koppling med
-/// kod ligger tydligt separerad under den. Rutan till höger förklarar vilken data som delas. Ingen inloggningsknapp här.
-/// Samma flöde som FirstRunForm på Windows.
+/// Onboarding (UI V1): "Slå dig ner vid elden." Logga in med webbläsaren är den primära handlingen (1.0.9); registrering
+/// med visningsnamn och koppling med kod ligger som alternativ under den. Rutan till höger förklarar vilken data som
+/// delas. Samma flöde som FirstRunForm på Windows.
 /// </summary>
 internal sealed class OnboardingWindow : Window
 {
     private readonly ApiClient _api;
     private readonly TextBox _name = Look.Input(null, 24);
     private readonly TextBox _code = Look.Input(T("onb.code.ph"), 16);
-    private readonly Button _register = Look.GoldButton(T("onb.start.title"));
+    private readonly Button _browser = Look.GoldButton(T("link.browser"));
+    private readonly Button _register = Look.QuietButton(T("onb.start.title"));
     private readonly Button _link = Look.QuietButton(T("first.link"));
     private readonly Button _useCode = Look.QuietButton(T("onb.usecode"));
     private readonly TextBlock _status = Look.Label("", 13, Look.Muted);
@@ -27,7 +28,7 @@ internal sealed class OnboardingWindow : Window
     public OnboardingWindow(ApiClient api)
     {
         _api = api;
-        Look.StyleWindow(this, T("first.title"), 960, 640);
+        Look.StyleWindow(this, T("first.title"), 960, 700);
         MinWidth = 760;
         MinHeight = 560;
 
@@ -39,6 +40,10 @@ internal sealed class OnboardingWindow : Window
 
         var start = new StackPanel { Spacing = 8 };
         start.Children.Add(Look.Label(T("onb.start.title"), 17, Look.Text, FontWeight.Bold));
+        start.Children.Add(Look.Label(T("link.explain"), 13, Look.Muted));
+        start.Children.Add(_browser);
+        start.Children.Add(new Border { Height = 1, Background = Look.B(Look.Line), Margin = new Thickness(0, 10, 0, 6) });
+        start.Children.Add(Look.Label(T("onb.orname"), 14, Look.Text, FontWeight.Bold));
         start.Children.Add(Look.Label(T("onb.start.text"), 13, Look.Muted));
         start.Children.Add(Look.Label(T("onb.name"), 13, Look.Text));
         start.Children.Add(_name);
@@ -105,6 +110,13 @@ internal sealed class OnboardingWindow : Window
         Content = root;
 
         _register.IsDefault = true;
+        _browser.Click += async (_, _) =>
+        {
+            // Nyckeln sparas av App (samma väg som namn och kod), därför ingen store här.
+            if (await BrowserLinkWindow.Run(_api, this, null, null) is not { } who) return;
+            Result = who;
+            Close();
+        };
         _register.Click += async (_, _) => await Run(async () =>
         {
             var n = (_name.Text ?? "").Trim();
@@ -123,7 +135,7 @@ internal sealed class OnboardingWindow : Window
 
     private async Task Run(Func<Task<Contributor>> action)
     {
-        _register.IsEnabled = _link.IsEnabled = false;
+        _register.IsEnabled = _link.IsEnabled = _browser.IsEnabled = false;
         _status.Foreground = Look.B(Look.Muted);
         _status.Text = T("onb.working");
         _useCode.IsVisible = false;
@@ -138,6 +150,6 @@ internal sealed class OnboardingWindow : Window
             _status.Text = ex is ArgumentException ? ex.Message : Strings.Error(ex);
             _useCode.IsVisible = ex is ApiException { FromServer: true, Code: "name-taken" };
         }
-        finally { _register.IsEnabled = _link.IsEnabled = true; }
+        finally { _register.IsEnabled = _link.IsEnabled = _browser.IsEnabled = true; }
     }
 }

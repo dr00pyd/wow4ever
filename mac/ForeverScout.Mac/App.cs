@@ -49,15 +49,14 @@ internal sealed class App : Application
             first.Activate();
             await closed.Task;
             if (first.Result is not { } who) { desktop.Shutdown(); return; }
-            try { KeychainStore.Save(who.Key); }
-            catch (Exception ex) when (ex is IOException or PlatformNotSupportedException)
+            // Samma väg för namn, kod och webbläsaren. Nyckelringen kan vägra – då körs appen ändå (nyckeln i minnet).
+            bool keyFailed = false;
+            ContributorStore.Save(who, s.Api, s.Settings, key =>
             {
-                await Dialogs.Info(null, Strings.S("err.io"));
-            }
-            s.Api.Key = who.Key;
-            s.Settings.ContributorId = who.Id;
-            s.Settings.ContributorName = who.Name;
-            s.Settings.Save();
+                try { KeychainStore.Save(key); }
+                catch (Exception ex) when (ex is IOException or PlatformNotSupportedException) { keyFailed = true; }
+            });
+            if (keyFailed) await Dialogs.Info(null, Strings.S("err.io"));
             firstRun = true;
         }
 

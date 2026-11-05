@@ -69,7 +69,7 @@ internal sealed class ScoutController : IDisposable
         _miUpload = Item(T("menu.upload"), () => _ = UploadNow(quietIfNothing: false));
         _miStatus = Item("", null, enabled: false);
         menu.Items.Add(new NativeMenuItemSeparator());
-        Item(T("menu.login"), null, enabled: false); // kommer snart
+        Item(T("menu.login"), () => _ = LinkWithBrowser(null));
         _miPause = Item(T("menu.pause"), () =>
         {
             Settings.AutoUploadPaused = !Settings.AutoUploadPaused;
@@ -226,9 +226,14 @@ internal sealed class ScoutController : IDisposable
         _window?.ShowStats();
     }
 
+    /// <summary>Poängen ändras också när andra bekräftar ens fynd – hämta därför med jämna mellanrum, inte bara efter egna uppladdningar.</summary>
+    private static readonly TimeSpan MeEvery = TimeSpan.FromMinutes(10);
+    private DateTime _meAt = DateTime.MinValue;
+
     public async Task RefreshMe()
     {
         if (string.IsNullOrEmpty(Api.Key)) return;
+        _meAt = DateTime.UtcNow;
         try
         {
             var me = await Api.MeAsync();
@@ -312,6 +317,7 @@ internal sealed class ScoutController : IDisposable
         RefreshStats(force: false);
         UpdateStatus();
         if (_uploader.RetryDue && AutoUploadActive) _sync.Notify();
+        if (DateTime.UtcNow - _meAt > MeEvery) _ = RefreshMe();
     }
 
     // ------------------------------------------------------------------ uppladdning
@@ -499,6 +505,7 @@ internal sealed class ScoutController : IDisposable
     {
         _window ??= new MainWindow(this);
         _window.ShowFromMenuBar();
+        if (DateTime.UtcNow - _meAt > TimeSpan.FromMinutes(1)) _ = RefreshMe(); // färska poäng när fönstret öppnas
     }
 
     public async Task ShowAbout()
@@ -522,7 +529,7 @@ internal sealed class ScoutController : IDisposable
         try
         {
             var oldLang = Settings.Language;
-            var f = new SettingsWindow(Settings, pickDir);
+            var f = new SettingsWindow(Settings, pickDir, LinkWithBrowser);
             var closed = new TaskCompletionSource();
             f.Closed += (_, _) => closed.TrySetResult();
             if (_window is { IsVisible: true }) await f.ShowDialog(_window);
@@ -535,6 +542,23 @@ internal sealed class ScoutController : IDisposable
             UpdateStatus();
         }
         finally { _settingsOpen = false; }
+    }
+
+    /// <summary>
+    /// "Logga in med webbläsaren" från menyerna och Inställningar: kopplar (eller byter koppling) utan omstart. Nyckeln
+    /// sparas via <see cref="ContributorStore"/> i nyckelringen – samma väg som vid första starten. Null om det avbröts.
+    /// </summary>
+    public async Task<Contributor?> LinkWithBrowser(Window? owner)
+    {
+        owner ??= _window is { IsVisible: true } ? _window : null;
+        var linked = await BrowserLinkWindow.Run(Api, owner, Settings.ContributorName,
+            who => ContributorStore.Save(who, Api, Settings, KeychainStore.Save));
+        if (linked is null) return null;
+        Log(TF("link.ok", linked.Name), Look.Ok);
+        _window?.ShowContribution();
+        UpdateStatus();
+        await RefreshMe();
+        return linked;
     }
 
     /// <summary>Första gången fönstret göms: tala om att appen finns kvar i menyraden.</summary>

@@ -4,15 +4,16 @@ using static ForeverScout.Core.Strings;
 namespace ForeverScout;
 
 /// <summary>
-/// Onboarding (UI V1): "Slå dig ner vid elden." Registrering med visningsnamn (primär handling) eller koppling med kod
-/// (sekundär, tydligt separerad). Ingen inloggningsknapp här – den finns utgråad bara i menyerna.
+/// Onboarding (UI V1): "Slå dig ner vid elden." Logga in med webbläsaren (primär handling, 1.0.8), annars registrering
+/// med visningsnamn eller koppling med kod (alternativ, tydligt separerade).
 /// </summary>
 internal sealed class FirstRunForm : Form
 {
     private readonly ApiClient _api;
     private readonly InputBox _name;
     private readonly InputBox _code;
-    private readonly Button _register = Theme.GoldButton(S("onb.start.title"));
+    private readonly Button _browser = Theme.GoldButton(S("link.browser"));
+    private readonly Button _register = Theme.QuietButton(S("onb.start.title"));
     private readonly Button _link = Theme.QuietButton(S("first.link"));
     private readonly Button _useCode = Theme.QuietButton(S("onb.usecode"));
     private readonly Label _nameError = Err();
@@ -33,7 +34,7 @@ internal sealed class FirstRunForm : Form
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(900, 760);
+        ClientSize = new Size(900, 820);
         KeyPreview = true;
 
         _name = new InputBox(380);
@@ -60,10 +61,15 @@ internal sealed class FirstRunForm : Form
         hero.Controls.Add(logo, 0, 0);
         hero.Controls.Add(heroText, 1, 0);
 
-        // ---------- Vänster kort: registrera / koppla ----------
+        // ---------- Vänster kort: webbläsaren / registrera / koppla ----------
         var left = Card();
         var l = Stack();
         l.Controls.Add(H2(S("onb.start.title")));
+        l.Controls.Add(Para(S("link.explain"), 400));
+        _browser.Margin = new Padding(0, 4, 0, 0);
+        l.Controls.Add(_browser);
+        l.Controls.Add(Separator(400));
+        l.Controls.Add(new SmallTitle(S("onb.orname")));
         l.Controls.Add(Para(S("onb.start.text"), 400));
         l.Controls.Add(FieldLabel(S("onb.name")));
         l.Controls.Add(_name);
@@ -116,6 +122,16 @@ internal sealed class FirstRunForm : Form
         Controls.Add(hero);
 
         AcceptButton = _register;
+        _browser.Click += (_, _) =>
+        {
+            // Nyckeln sparas av Program (samma väg som namn och kod), därför ingen store här.
+            using var f = new BrowserLinkForm(_api, null, null);
+            f.ShowDialog(this);
+            if (f.Result is not { } who) return;
+            Result = who;
+            DialogResult = DialogResult.OK;
+            Close();
+        };
         _register.Click += async (_, _) => await Run(_nameError, async () =>
         {
             var n = _name.Value.Trim();
@@ -151,7 +167,7 @@ internal sealed class FirstRunForm : Form
     {
         _nameError.Text = _codeError.Text = "";
         _useCode.Visible = false;
-        _register.Enabled = _link.Enabled = false;
+        _register.Enabled = _link.Enabled = _browser.Enabled = false;
         _quick.Text = S("onb.working");
         UseWaitCursor = true;
         try
@@ -167,7 +183,7 @@ internal sealed class FirstRunForm : Form
         finally
         {
             UseWaitCursor = false;
-            _register.Enabled = _link.Enabled = true;
+            _register.Enabled = _link.Enabled = _browser.Enabled = true;
             _quick.Text = S("onb.quick");
         }
     }

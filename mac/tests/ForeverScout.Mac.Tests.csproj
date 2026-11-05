@@ -42,6 +42,8 @@
     <Compile Include="..\..\windows\tests\Compat\ReleaseVerifier102.cs" Link="Shared\ReleaseVerifier102.cs" />
     <!-- 1.0.7: L10 (signature2, issued, ingen nedgradering), L11 (bekräfta spelkatalogen), L12 (inga omdirigeringar). -->
     <Compile Include="..\..\windows\tests\Release107Tests.cs" Link="Shared\Release107Tests.cs" />
+    <!-- 1.0.9: logga in med webbläsaren (kontraktet 2b) – DeviceLink mot låtsasserver och låtsasklocka. -->
+    <Compile Include="..\..\windows\tests\DeviceLinkTests.cs" Link="Shared\DeviceLinkTests.cs" />
   </ItemGroup>
 
 </Project>

@@ -17,7 +17,8 @@ internal sealed class SettingsForm : Form
 
     public bool Unlinked { get; private set; }
 
-    public SettingsForm(Settings settings, bool startInDirPicker = false)
+    /// <param name="linkWithBrowser">"Logga in med webbläsaren" (ScoutApp.LinkWithBrowser); null = ingen sådan knapp.</param>
+    public SettingsForm(Settings settings, bool startInDirPicker = false, Func<IWin32Window, Task<Contributor?>>? linkWithBrowser = null)
     {
         _settings = settings;
         Text = startInDirPicker ? S("pick.title") : S("set.title");
@@ -62,23 +63,41 @@ internal sealed class SettingsForm : Form
                 catch (Exception ex) when (ex is SafeFsException or IOException or System.ComponentModel.Win32Exception) { _error.Text = Error(ex); }
             };
             flow.Controls.Add(openLog);
-            if (settings.ContributorName is { } who)
+            var who = settings.ContributorName;
+            if (who != null || linkWithBrowser != null)
             {
                 flow.Controls.Add(Spacer());
-                var unlink = Theme.QuietButton(S("set.unlink"));
-                unlink.Click += (_, _) =>
-                {
-                    if (MessageBox.Show(this, S("set.unlink.confirm"), S("app"), MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
-                    KeyStore.Delete();
-                    _settings.ContributorName = _settings.ContributorId = null;
-                    _settings.Save();
-                    Unlinked = true;
-                    DialogResult = DialogResult.OK;
-                    Close();
-                };
-                var lbl = Theme.Label(F("set.account", who), 9.5f, Theme.Muted);
+                var lbl = Theme.Label(who is null ? "" : F("set.account", who), 9.5f, Theme.Muted);
                 lbl.Margin = new Padding(0, 8, 10, 0);
-                flow.Controls.Add(Row(lbl, unlink));
+                var row = Row(lbl);
+                // Logga in med webbläsaren först (1.0.8), sedan Koppla från.
+                if (linkWithBrowser != null)
+                {
+                    var login = Theme.QuietButton(S("link.browser"));
+                    login.Click += async (_, _) =>
+                    {
+                        if (await linkWithBrowser(this) is { } linked) lbl.Text = F("set.account", linked.Name);
+                    };
+                    login.Margin = new Padding(0, 0, 8, 0);
+                    row.Controls.Add(login);
+                }
+                if (who != null)
+                {
+                    var unlink = Theme.QuietButton(S("set.unlink"));
+                    unlink.Click += (_, _) =>
+                    {
+                        if (MessageBox.Show(this, S("set.unlink.confirm"), S("app"), MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+                        KeyStore.Delete();
+                        _settings.ContributorName = _settings.ContributorId = null;
+                        _settings.Save();
+                        Unlinked = true;
+                        DialogResult = DialogResult.OK;
+                        Close();
+                    };
+                    unlink.Margin = new Padding(0, 0, 8, 0);
+                    row.Controls.Add(unlink);
+                }
+                flow.Controls.Add(row);
             }
         }
         flow.Controls.Add(_error);

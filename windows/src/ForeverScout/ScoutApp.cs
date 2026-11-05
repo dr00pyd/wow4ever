@@ -70,8 +70,7 @@ internal sealed class ScoutApp : ApplicationContext
         _miUpload = Item(S("menu.upload"), async (_, _) => await UploadNow(quietIfNothing: false));
         _miStatus = Item("", null);
         _miStatus.Enabled = false;
-        _miLogin = Item(S("menu.login"), null);
-        _miLogin.Enabled = false; // kommer snart
+        _miLogin = Item(S("menu.login"), async (_, _) => await LinkWithBrowser(null));
         _miPause = Item(S("menu.pause"), (_, _) => { Settings.AutoUploadPaused = _miPause!.Checked; Settings.Save(); UpdateStatus(); });
         _miPause.CheckOnClick = true;
         _miPayload = Item(S("menu.payload"), (_, _) => ShowPayload());
@@ -247,9 +246,14 @@ internal sealed class ScoutApp : ApplicationContext
         _form?.ShowStats();
     }
 
+    /// <summary>Poängen ändras också när andra bekräftar ens fynd – hämta därför med jämna mellanrum, inte bara efter egna uppladdningar.</summary>
+    private static readonly TimeSpan MeEvery = TimeSpan.FromMinutes(10);
+    private DateTime _meAt = DateTime.MinValue;
+
     public async Task RefreshMe()
     {
         if (string.IsNullOrEmpty(Api.Key)) return;
+        _meAt = DateTime.UtcNow;
         try
         {
             var me = await Api.MeAsync();
@@ -330,7 +334,7 @@ internal sealed class ScoutApp : ApplicationContext
         RefreshStats(force: false);
         UpdateStatus();
         if (_uploader.RetryDue && AutoUploadActive) _sync.Notify();
-        await Task.CompletedTask;
+        if (DateTime.UtcNow - _meAt > MeEvery) await RefreshMe();
     }
 
     /// <summary>
@@ -503,6 +507,7 @@ internal sealed class ScoutApp : ApplicationContext
     {
         if (_form is null || _form.IsDisposed) _form = new MainForm(this);
         _form.ShowFromTray();
+        if (DateTime.UtcNow - _meAt > TimeSpan.FromMinutes(1)) _ = RefreshMe(); // färska poäng när fönstret öppnas
     }
 
     public MainForm? Window => _form;
@@ -510,7 +515,7 @@ internal sealed class ScoutApp : ApplicationContext
     public void OpenSettings(bool pickDir)
     {
         var oldLang = Settings.Language;
-        using var f = new SettingsForm(Settings, pickDir);
+        using var f = new SettingsForm(Settings, pickDir, LinkWithBrowser);
         var owner = _form is { Visible: true } ? _form : null;
         if ((owner is null ? f.ShowDialog() : f.ShowDialog(owner)) != DialogResult.OK) return;
         if (f.Unlinked || oldLang != Settings.Language) { Restart(); return; }
@@ -518,6 +523,23 @@ internal sealed class ScoutApp : ApplicationContext
         InstallBundledAddonIfNeeded();
         RefreshStats(force: true);
         UpdateStatus();
+    }
+
+    /// <summary>
+    /// "Logga in med webbläsaren" från menyerna och Inställningar: kopplar (eller byter koppling) utan omstart. Nyckeln
+    /// sparas via <see cref="ContributorStore"/> – samma väg som vid första starten. Null om det avbröts eller misslyckades.
+    /// </summary>
+    public async Task<Contributor?> LinkWithBrowser(IWin32Window? owner)
+    {
+        using var f = new BrowserLinkForm(Api, Settings.ContributorName, who => ContributorStore.Save(who, Api, Settings, KeyStore.Save));
+        owner ??= _form is { Visible: true } ? _form : null;
+        if (owner is null) f.ShowDialog(); else f.ShowDialog(owner);
+        if (f.Result is not { } linked) return null;
+        Log(F("link.ok", linked.Name), Theme.Ok);
+        _form?.ShowContribution();
+        UpdateStatus();
+        await RefreshMe();
+        return linked;
     }
 
     /// <summary>Engångstips när fönstret göms första gången.</summary>

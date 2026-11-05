@@ -22,7 +22,8 @@ vad bidraget ledde till. Kontrakt: `docs/briefs/SCOUT-KONTRAKT.md`.
 | `ForeverScout.Mac/App.cs` | Avalonia-appen (mörkt Fluent-tema), onboarding vid första starten |
 | `ForeverScout.Mac/ScoutController.cs` | Menyraden, filbevakning, uppladdning, uppdateringar – motsvarar `ScoutApp.cs` på Windows |
 | `ForeverScout.Mac/MainWindow.cs` | Dashboard: tre kort, tabellen, Mitt bidrag, lägerjournalen, statusraden, stäng-frågan |
-| `ForeverScout.Mac/OnboardingWindow.cs` | "Slå dig ner vid elden." – namn eller kod |
+| `ForeverScout.Mac/OnboardingWindow.cs` | "Slå dig ner vid elden." – logga in med webbläsaren, namn eller kod |
+| `ForeverScout.Mac/BrowserLinkWindow.cs` | Logga in med webbläsaren: koden, väntan på godkännande, Avbryt (Core: `DeviceLink`) |
 | `ForeverScout.Mac/SettingsWindow.cs`, `PayloadWindow.cs`, `Dialogs.cs` | Inställningar, "Visa vad som skickas", dialoger |
 | `ForeverScout.Mac/Look.cs` | Lägereld-tokens (samma värden som `Theme` i Windows-klientens `Support.cs`) |
 | `ForeverScout.Mac/KeychainStore.cs` | Nyckeln i nyckelringen (Security.framework via P/Invoke) |
@@ -73,13 +74,22 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
   över (samma regel som pipen på Windows, `Takeover.Decide`). Inga nätverksportar.
 - **Verktyg som körs:** bara `/usr/bin/ditto` (packa upp uppdateringen) och `/usr/bin/codesign` (kontrollera den),
   med fasta sökvägar och utan skal. Länkar öppnas med `open` (bara https mot guide.wow4ever.se).
-- **Nätverk:** samma som Windows – bara `https://guide.wow4ever.se`, samma anrop och rubriker.
+- **Nätverk:** samma som Windows – bara `https://guide.wow4ever.se`, samma anrop och rubriker (inloggningen med
+  webbläsaren skickar `platform: "mac"`).
 
 ## Gränssnittet
 - **Menyraden:** lägereldens siluett som mallbild (följer ljust/mörkt läge). Under uppladdning en färgad eld med
   amberring som snurrar, vid fel en färgad eld med röd prick. Menyn: Öppna Forever Scout, Ladda upp nu, statusrad,
-  Logga in – kommer snart (utgråad), Pausa automatisk uppladdning (bock), Visa vad som skickas, Sök efter uppdateringar,
+  Logga in med webbläsaren …, Pausa automatisk uppladdning (bock), Visa vad som skickas, Sök efter uppdateringar,
   Forever-guiden, Inställningar …, Om Forever Scout, Avsluta.
+- **Första starten** (`OnboardingWindow`): **Logga in med webbläsaren** (guldknappen, 1.0.9) först; välj visningsnamn
+  och koppla med kod finns kvar som alternativ under den.
+- **Logga in med webbläsaren** (`BrowserLinkWindow`, samma Core-flöde som Windows, `DeviceLink`, kontraktet 2b): appen
+  öppnar `https://guide.wow4ever.se/bidra/koppla?kod=…` med `open`, visar koden (`XXXX-XXXX`), "Väntar på godkännande
+  i webbläsaren …" och Avbryt. Godkänt = nyckeln sparas i nyckelringen precis som efter koppling med kod
+  (`ContributorStore.Save`). Sidan öppnas bara om adressen börjar exakt med `https://guide.wow4ever.se/` (i Debug även
+  loopback-basadressen). Nås också från kugghjulsmenyn, menyraden och Inställningar (där byter den kopplingen).
+  Fönstrets höjd följer innehållet (`Look.StyleWindow(..., height: null)`).
 - **Fönstret** har samma innehåll som på Windows (kort, tabell, Mitt bidrag, lägerjournal, statusrad, F5 laddar upp)
   och kugghjulsmenyn med länkarna.
 - **Stäng** (röda knappen eller ⌘W) ställer samma fråga: Stäng, Göm i menyraden eller Avbryt, plus "Fråga inte igen".
@@ -217,6 +227,8 @@ släppnyckeln `scout-release-private.pem` (samma som för Windows-släppen – d
 - `ReleaseVerifier.cs`: `ReleaseKind.Mac`, `SignedFields3`, `VerifyMac` (signature3), `SignedRelease.Mac/MacFile/HasSignature3`.
   `Verify` beter sig exakt som förut.
 - `ApiClient.cs`: `MacVersionAsync` (ny metod). `UnixInstance.cs`, `MacBundleUpdater.cs`: nya, bara macOS.
+- 1.0.8/1.0.9: `ApiClient.DeviceStartAsync`/`DeviceStatusAsync`, `ApiException.RetryAfter`, `DeviceLink.cs`
+  (`DeviceLink`, `ContributorStore`) och `link.*`-texterna – delade med Windows.
 - `Errors.cs`/`Strings.cs`: tre nya felkoder och `mac.*`-texter (tillägg). `Takeover.cs`, `AppBehavior.cs`:
   plattformsattribut, `ReadRequest` internal.
 - `scripts/scout-sign.mjs`: `--mac`, `--mac-version`, `--allow-unnotarized`, `signature3`.

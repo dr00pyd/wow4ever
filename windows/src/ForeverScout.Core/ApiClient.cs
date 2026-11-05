@@ -65,6 +65,34 @@ public sealed class ApiException(string code, HttpStatusCode? status = null, str
     public bool Rejected => FromServer && Status is { } s && (int)s >= 400 && (int)s < 500 && !Transient;
     /// <summary>Värt att försöka igen senare (nätfel, 5xx, 429).</summary>
     public bool Transient => transient || (Status is { } s && ((int)s >= 500 || s == HttpStatusCode.TooManyRequests || s == HttpStatusCode.RequestTimeout));
+    /// <summary>Serverns "Retry-After" (t.ex. vid 429 rate-limited), annars null.</summary>
+    public TimeSpan? RetryAfter { get; init; }
+}
+
+/// <summary>
+/// Svar från POST /api/bidrag/enhet (kontraktet 2b). <see cref="DeviceCode"/> är appens hemlighet: den visas aldrig och
+/// skickas aldrig till webbläsaren, bara tillbaka till /api/bidrag/enhet/status.
+/// </summary>
+public sealed class DeviceStartResult
+{
+    [JsonPropertyName("userCode")] public string? UserCode { get; set; }
+    [JsonPropertyName("deviceCode")] public string? DeviceCode { get; set; }
+    [JsonPropertyName("url")] public string? Url { get; set; }
+    [JsonPropertyName("expiresIn")] public int? ExpiresIn { get; set; }
+    [JsonPropertyName("interval")] public int? Interval { get; set; }
+}
+
+/// <summary>Svar från POST /api/bidrag/enhet/status: pending, approved (med id, key, name), denied, expired eller too-many-keys.</summary>
+public sealed class DeviceStatusResult
+{
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("id")] public JsonElement Id { get; set; }
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+
+    /// <summary>Bidragsgivaren om svaret är "approved" med en nyckel, annars null.</summary>
+    public Contributor? ToContributor() =>
+        Status == "approved" && Key is { Length: > 0 } k ? new Contributor(Id.ToString(), k, Name ?? "") : null;
 }
 
 /// <summary>Anropar /api/bidrag/* – bara HTTPS mot guide.wow4ever.se (bas-URL kan bytas med FOREVERSCOUT_BASEURL för test).</summary>
@@ -151,18 +179,28 @@ public sealed class ApiClient : IDisposable
         if ((int)resp.StatusCode is >= 300 and < 400) throw new ApiException(ErrorCodes.Redirect, resp.StatusCode);
     }
 
-    /// <summary>Felsvar → ApiException med serverns kod ("code") om den finns, annars "http".</summary>
+    /// <summary>Felsvar → ApiException med serverns kod ("code") om den finns, annars "http". Retry-After följer med.</summary>
     private static async Task<ApiException> ErrorFrom(HttpResponseMessage resp, CancellationToken ct)
     {
+        var retry = RetryAfterOf(resp);
         try
         {
             var body = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() is { Length: > 0 and < 64 } code)
-                return new ApiException(code, resp.StatusCode) { FromServer = true, ServerDetail = CleanDetail(doc.RootElement) };
+                return new ApiException(code, resp.StatusCode) { FromServer = true, ServerDetail = CleanDetail(doc.RootElement), RetryAfter = retry };
         }
         catch { }
-        return new ApiException(ErrorCodes.Http, resp.StatusCode);
+        return new ApiException(ErrorCodes.Http, resp.StatusCode) { RetryAfter = retry };
+    }
+
+    /// <summary>"Retry-After" som sekunder eller datum → väntetid (aldrig negativ), annars null.</summary>
+    private static TimeSpan? RetryAfterOf(HttpResponseMessage resp)
+    {
+        if (resp.Headers.RetryAfter is not { } r) return null;
+        if (r.Delta is { } d) return d < TimeSpan.Zero ? TimeSpan.Zero : d;
+        if (r.Date is { } at) { var left = at - DateTimeOffset.UtcNow; return left < TimeSpan.Zero ? TimeSpan.Zero : left; }
+        return null;
     }
 
     /// <summary>"detail" som en enda rad utan styrtecken, högst 200 tecken.</summary>
@@ -195,6 +233,25 @@ public sealed class ApiClient : IDisposable
         var r = Req(HttpMethod.Post, "/api/bidrag/koppla", false);
         r.Content = JsonContent.Create(new { code = code.Trim() });
         return (await Send<ContributorDto>(r, ct)).ToContributor();
+    }
+
+    /// <summary>
+    /// Logga in med webbläsaren, steg 1 (kontraktet 2b): ingen nyckel, ingen Origin. Ger en kod att visa, appens
+    /// hemliga deviceCode och sidan som webbläsaren ska öppna (kontrolleras av <see cref="DeviceLink.IsAllowedUrl"/>).
+    /// </summary>
+    public Task<DeviceStartResult> DeviceStartAsync(string platform, string version, CancellationToken ct = default)
+    {
+        var r = Req(HttpMethod.Post, "/api/bidrag/enhet", false);
+        r.Content = JsonContent.Create(new { platform, version });
+        return Send<DeviceStartResult>(r, ct);
+    }
+
+    /// <summary>Logga in med webbläsaren, steg 2: har personen godkänt? Frågas var "interval":e sekund.</summary>
+    public Task<DeviceStatusResult> DeviceStatusAsync(string deviceCode, CancellationToken ct = default)
+    {
+        var r = Req(HttpMethod.Post, "/api/bidrag/enhet/status", false);
+        r.Content = JsonContent.Create(new { deviceCode });
+        return Send<DeviceStatusResult>(r, ct);
     }
 
     public async Task<UploadResult> UploadAsync(byte[] luaText, CancellationToken ct = default)

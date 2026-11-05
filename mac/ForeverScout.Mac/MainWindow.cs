@@ -176,7 +176,7 @@ internal sealed class MainWindow : Window
         Item(T("menu.privacy"), () => Links.Open(_app.Api, Links.Privacy(_app.Api)));
         Item(T("menu.report"), () => Links.Open(_app.Api, Links.Report(_app.Api)));
         m.Items.Add(new Separator());
-        Item(T("menu.login"), null, enabled: false); // kommer snart
+        Item(T("menu.login"), () => _ = _app.LinkWithBrowser(this));
         Item(T("menu.about"), () => _ = _app.ShowAbout());
         Item(T("menu.exit"), _app.Exit);
         return m;

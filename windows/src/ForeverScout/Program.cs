@@ -59,11 +59,7 @@ internal static class Program
         {
             using var first = new FirstRunForm(api);
             if (first.ShowDialog() != DialogResult.OK || first.Result is not { } who) return 0;
-            KeyStore.Save(who.Key);
-            api.Key = who.Key;
-            settings.ContributorId = who.Id;
-            settings.ContributorName = who.Name;
-            settings.Save();
+            ContributorStore.Save(who, api, settings, KeyStore.Save); // samma väg för namn, kod och webbläsaren
             firstRun = true;
         }
 

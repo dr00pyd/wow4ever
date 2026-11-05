@@ -25,7 +25,8 @@ internal sealed class SettingsWindow : Window
     public bool Saved { get; private set; }
     public bool Unlinked { get; private set; }
 
-    public SettingsWindow(Settings settings, bool pickDir)
+    /// <param name="linkWithBrowser">"Logga in med webbläsaren" (ScoutController.LinkWithBrowser); null = ingen sådan knapp.</param>
+    public SettingsWindow(Settings settings, bool pickDir, Func<Window, Task<Contributor?>>? linkWithBrowser = null)
     {
         _settings = settings;
         Look.StyleWindow(this, T("set.title"), 640, null);
@@ -67,25 +68,39 @@ internal sealed class SettingsWindow : Window
         };
         flow.Children.Add(openLog);
 
-        if (settings.ContributorName is { } who)
+        var who = settings.ContributorName;
+        if (who != null || linkWithBrowser != null)
         {
             flow.Children.Add(Spacer());
-            var unlink = Look.QuietButton(T("set.unlink"));
-            unlink.Click += async (_, _) =>
-            {
-                if (!await Dialogs.YesNo(this, T("set.unlink.confirm"))) return;
-                KeychainStore.Delete();
-                _settings.ContributorName = _settings.ContributorId = null;
-                _settings.Save();
-                Unlinked = true;
-                Saved = true;
-                Close();
-            };
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var lbl = Look.Label(TF("set.account", who), 13, Look.Muted);
+            var lbl = Look.Label(who is null ? "" : TF("set.account", who), 13, Look.Muted);
             lbl.VerticalAlignment = VerticalAlignment.Center;
             row.Children.Add(lbl);
-            row.Children.Add(unlink);
+            // Logga in med webbläsaren först (1.0.9), sedan Koppla från.
+            if (linkWithBrowser != null)
+            {
+                var login = Look.QuietButton(T("link.browser"));
+                login.Click += async (_, _) =>
+                {
+                    if (await linkWithBrowser(this) is { } linked) lbl.Text = TF("set.account", linked.Name);
+                };
+                row.Children.Add(login);
+            }
+            if (who != null)
+            {
+                var unlink = Look.QuietButton(T("set.unlink"));
+                unlink.Click += async (_, _) =>
+                {
+                    if (!await Dialogs.YesNo(this, T("set.unlink.confirm"))) return;
+                    KeychainStore.Delete();
+                    _settings.ContributorName = _settings.ContributorId = null;
+                    _settings.Save();
+                    Unlinked = true;
+                    Saved = true;
+                    Close();
+                };
+                row.Children.Add(unlink);
+            }
             flow.Children.Add(row);
         }
 
