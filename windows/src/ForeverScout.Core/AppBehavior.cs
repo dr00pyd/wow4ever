@@ -4,6 +4,7 @@ namespace ForeverScout.Core;
 /// En instans per användare: en mutex, plus en namngiven händelse som en andra start signalerar
 /// så att den första instansen tar fram sitt fönster.
 /// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public sealed class SingleInstance : IDisposable
 {
     private readonly Mutex _mutex;

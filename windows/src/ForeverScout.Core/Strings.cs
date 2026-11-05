@@ -243,6 +243,22 @@ public static class Strings
         ["err.update-failed"] = ("Uppdateringen misslyckades ({0}).", "The update failed ({0})."),
         ["err.access-denied"] = ("Åtkomst utanför WoW-katalogen nekades (skydd).", "Access outside the WoW folder was refused (safeguard)."),
         ["err.not-our-file"] = ("Filen innehåller annat än ForeverScoutDB och skickas inte.", "The file contains more than ForeverScoutDB and is not sent."),
+        ["err.app-translocated"] = ("Flytta Forever Scout till mappen Program (Applications) och starta den därifrån – från den här platsen kan appen inte uppdatera sig.", "Move Forever Scout to the Applications folder and start it from there – it cannot update itself from this location."),
+        ["err.codesign-invalid"] = ("Den nya versionens Apple-signatur stämmer inte – uppdateringen installeras inte.", "The new version's Apple signature does not match – the update will not be installed."),
+        ["err.no-bundle"] = ("Appen körs inte från Forever Scout.app och kan inte uppdatera sig.", "The app is not running from Forever Scout.app and cannot update itself."),
+
+        // ---- macOS (client/mac): texter som skiljer sig från Windows. Mac-appen tar "mac.<nyckel>" före "<nyckel>". ----
+        ["mac.set.autostart"] = ("Starta vid inloggning (i menyraden)", "Open at login (in the menu bar)"),
+        ["mac.close.tray"] = ("Göm i menyraden", "Hide in the menu bar"),
+        ["mac.tray.hint"] = ("Forever Scout körs i menyraden", "Forever Scout is running in the menu bar"),
+        ["mac.tray.hint.body"] = ("Klicka på lägerelden i menyraden för att öppna fönstret igen.", "Click the campfire in the menu bar to open the window again."),
+        ["mac.takeover.old"] = ("En annan Forever Scout körs redan – avsluta den via lägerelden i menyraden (Avsluta) och starta igen.", "Another Forever Scout is already running – quit it from the campfire in the menu bar (Exit) and start again."),
+        ["mac.set.gamedir"] = ("WoW-katalog (Forever, t.ex. /Applications/World of Warcraft/_forever_)", "WoW folder (Forever, e.g. /Applications/World of Warcraft/_forever_)"),
+        ["mac.pick.intro"] = ("Välj spelets Forever-katalog. Den ligger oftast i /Applications/World of Warcraft/_forever_.", "Choose the game's Forever folder. It is usually /Applications/World of Warcraft/_forever_."),
+        ["mac.about.variant.full"] = ("macOS", "macOS"),
+        ["mac.update.inuse"] = ("Kunde inte ersätta Forever Scout.app. Kontrollera att appen ligger i Program (Applications) och att ditt konto får ändra den, och försök igen.", "Could not replace Forever Scout.app. Check that the app is in Applications and that your account may change it, then try again."),
+        ["mac.set.unlink.confirm"] = ("Koppla från den här datorn? Nyckeln raderas ur nyckelringen.", "Unlink this computer? The key is deleted from the keychain."),
+        ["mac.menu.hide"] = ("Göm fönstret", "Hide window"),
 
         // ---- Serverns felkoder (lib/scout/http.ts, fältet "code") ----
         ["srv.origin"] = ("Fel ursprung.", "Wrong origin."),

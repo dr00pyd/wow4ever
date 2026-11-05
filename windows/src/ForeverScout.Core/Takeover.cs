@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -37,6 +38,7 @@ public static class Takeover
     public const int MaxMessageBytes = 4096;
 
     /// <summary>Pipenamn per användare och session (pipes är globala i Windows, mutex/händelser är "Local\").</summary>
+    [SupportedOSPlatform("windows")]
     public static string PipeName(string id)
     {
         var who = $"{Environment.UserDomainName}\\{Environment.UserName}|{System.Diagnostics.Process.GetCurrentProcess().SessionId}";
@@ -61,6 +63,7 @@ public static class Takeover
     }
 
     /// <summary>Nykomlingen: fråga den körande instansen. Väntar högst <paramref name="timeout"/> på svar.</summary>
+    [SupportedOSPlatform("windows")]
     public static TakeoverOutcome Request(string id, TakeoverRequest me, TimeSpan timeout)
     {
         try
@@ -87,6 +90,7 @@ public static class Takeover
     /// Den körande instansen: lyssnar på pipen i bakgrunden. <paramref name="decide"/> väljer svar, och
     /// <paramref name="act"/> anropas efter att svaret skickats (t.ex. avsluta appen eller visa fönstret).
     /// </summary>
+    [SupportedOSPlatform("windows")]
     public static IDisposable Listen(string id, Func<TakeoverRequest, TakeoverDecision> decide, Action<TakeoverDecision> act)
     {
         var cts = new CancellationTokenSource();
@@ -117,7 +121,7 @@ public static class Takeover
         return new Stopper(cts);
     }
 
-    private static async Task<TakeoverRequest?> ReadRequest(Stream s, CancellationToken ct)
+    internal static async Task<TakeoverRequest?> ReadRequest(Stream s, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));

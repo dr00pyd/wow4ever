@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Mall för Forever Scout.app/Contents/Info.plist. build.sh byter __VERSION__ och __BUILD__. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Forever Scout</string>
+  <key>CFBundleDisplayName</key>
+  <string>Forever Scout</string>
+  <key>CFBundleIdentifier</key>
+  <string>se.wow4ever.foreverscout</string>
+  <key>CFBundleExecutable</key>
+  <string>ForeverScout</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__BUILD__</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>sv</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>sv</string>
+    <string>en</string>
+  </array>
+  <!-- Bara i menyraden: ingen Dock-ikon, ingen programmeny. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.utilities</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Forever-guiden 2026 · guide.wow4ever.se</string>
+</dict>
+</plist>

@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tester för macOS-delen: ForeverScout.Core byggd för net10.0 (samma mål som Mac-appen) och Mac-appens logik.
+    Körs på Windows (rena funktioner, signaturer, en-instans-låset) och på macOS (dessutom riktiga filsystemstester
+    med symlänkar, 0700, ditto och paketbytet – [UnixFact]).
+      dotnet test client/mac/tests
+    Plattformsoberoende tester från Windows-klienten länkas in, så att Core-logiken körs även på macOS.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>ForeverScout.Mac.Tests</RootNamespace>
+    <!-- Testerna anropar macOS-API:er medvetet (de körs bara där det går, se UnixFact). -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\windows\src\ForeverScout.Core\ForeverScout.Core.csproj" />
+    <ProjectReference Include="..\ForeverScout.Mac\ForeverScout.Mac.csproj" />
+  </ItemGroup>
+
+  <!-- Plattformsoberoende Core-tester från Windows-klienten (oförändrade filer, bara länkade). -->
+  <ItemGroup>
+    <Compile Include="..\..\windows\tests\TestEnv.cs" Link="Shared\TestEnv.cs" />
+    <Compile Include="..\..\windows\tests\LuaParserTests.cs" Link="Shared\LuaParserTests.cs" />
+    <Compile Include="..\..\windows\tests\ScoutStatsTests.cs" Link="Shared\ScoutStatsTests.cs" />
+    <Compile Include="..\..\windows\tests\ReleaseSignatureTests.cs" Link="Shared\ReleaseSignatureTests.cs" />
+    <Compile Include="..\..\windows\tests\SyncTests.cs" Link="Shared\SyncTests.cs" />
+    <Compile Include="..\..\windows\tests\Compat\ReleaseVerifier102.cs" Link="Shared\ReleaseVerifier102.cs" />
+  </ItemGroup>
+
+</Project>

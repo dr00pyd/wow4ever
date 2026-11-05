@@ -132,7 +132,9 @@ public sealed class SafeFsTests : IDisposable
 
 /// <summary>
 /// Statisk vakt: ingen källfil utom SafeFs.cs får röra filsystem, register eller processlistor direkt,
-/// och bara ApiClient.cs får använda HttpClient.
+/// och bara ApiClient.cs får använda HttpClient. Gäller Windows-klienten (src/) OCH macOS-appen
+/// (client/mac/ForeverScout.Mac), som bygger på samma Core. Enda undantaget för Socket är UnixInstance.cs
+/// (macOS: en instans), och där bara med AddressFamily.Unix.
 /// </summary>
 public class StaticGuardTests
 {
@@ -143,9 +145,17 @@ public class StaticGuardTests
         throw new DirectoryNotFoundException("src");
     }
 
+    /// <summary>client/mac/ForeverScout.Mac (macOS-appen) – finns alltid i repot.</summary>
+    private static string MacDir()
+    {
+        var mac = Path.GetFullPath(Path.Combine(SrcDir(), "..", "..", "mac", "ForeverScout.Mac"));
+        Assert.True(Directory.Exists(mac), "hittar inte " + mac);
+        return mac;
+    }
+
     private static IEnumerable<(string File, int Line, string Text)> Sources()
     {
-        foreach (var f in Directory.GetFiles(SrcDir(), "*.cs", SearchOption.AllDirectories))
+        foreach (var f in Directory.GetFiles(SrcDir(), "*.cs", SearchOption.AllDirectories).Concat(Directory.GetFiles(MacDir(), "*.cs", SearchOption.AllDirectories)))
         {
             if (f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") || f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")) continue;
             var lines = File.ReadAllLines(f);
@@ -195,8 +205,31 @@ public class StaticGuardTests
     public void OnlyApiClientUsesHttpClient()
     {
         var hits = Sources().Where(s => Path.GetFileName(s.File) != "ApiClient.cs" && Regex.IsMatch(s.Text, @"\bHttpClient\b|\bWebClient\b|\bHttpWebRequest\b|\bSocket\b|\bTcpClient\b"))
+            .Where(s => !(Path.GetFileName(s.File) == "UnixInstance.cs" && Regex.IsMatch(s.Text, @"\bSocket\b") && !Regex.IsMatch(s.Text, @"\bHttpClient\b|\bWebClient\b|\bHttpWebRequest\b|\bTcpClient\b")))
             .Select(s => $"{Path.GetFileName(s.File)}:{s.Line}: {s.Text.Trim()}").ToList();
         Assert.True(hits.Count == 0, string.Join("\n", hits));
+    }
+
+    [Fact]
+    public void UnixInstanceUsesOnlyUnixDomainSockets()
+    {
+        var src = File.ReadAllText(Path.Combine(SrcDir(), "ForeverScout.Core", "UnixInstance.cs"));
+        var families = Regex.Matches(src, @"AddressFamily\.(\w+)").Select(m => m.Groups[1].Value).Distinct().ToList();
+        Assert.Equal(["Unix"], families);
+        Assert.DoesNotContain("IPEndPoint", src);
+        Assert.DoesNotContain("DnsEndPoint", src);
+        Assert.DoesNotContain("InterNetwork", src);
+    }
+
+    [Fact]
+    public void MacToolsAreFixedSystemBinaries()
+    {
+        // SafeFs kör bara /usr/bin/ditto och /usr/bin/codesign (fasta sökvägar, inget skal).
+        var safe = File.ReadAllText(Path.Combine(SrcDir(), "ForeverScout.Core", "SafeFs.cs"));
+        var tools = Regex.Matches(safe, @"RunTool\(""([^""]+)""").Select(m => m.Groups[1].Value).Distinct().OrderBy(x => x).ToList();
+        Assert.Equal(["/usr/bin/codesign", "/usr/bin/ditto"], tools);
+        Assert.DoesNotContain("/bin/sh", safe);
+        Assert.DoesNotContain("/bin/bash", safe);
     }
 
     [Fact]

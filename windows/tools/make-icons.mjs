@@ -13,6 +13,12 @@
 // guldkant och varm glöd underifrån. 16–24 px får en förenklad, ritad variant i samma palett (lågan + två vedträn) så
 // att den inte blir gröt. Fältikonen (32 px) byggs av samma målade eld – samma karaktär som tidigare.
 //   node client/windows/tools/make-icons.mjs [--compare <gammal app.ico>]   (jämförelseark → docs/review/design/scout-icon-v2.png)
+// macOS (client/mac), skrivs alltid – med --mac-only skrivs BARA de här och Windows-filerna lämnas orörda:
+//   client/mac/assets/AppIcon.iconset/icon_*.png   16–512 @1x/@2x (iconutil -c icns på en Mac)
+//   client/mac/assets/AppIcon.icns                 samma bilder som PNG-poster (ic04–ic14), byggs här utan iconutil
+//   client/mac/ForeverScout.Mac/Assets/            tray-template.png (svart mall, 36 px), tray-error.png, tray-upload-0..3.png,
+//                                                  logo-header.png, app-256.png
+// Appikonen följer macOS rutnät: rundad ruta på 824/1024 av ytan, centrerad, med en mjuk skugga under.
 import sharp from "sharp";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +35,10 @@ const DESIGN = join(GUIDE, "docs", "review", "design");
 const INST = join(WIN, "installer");
 const argCompare = process.argv.indexOf("--compare");
 const OLD_ICO = argCompare > 0 ? process.argv[argCompare + 1] : null;
+const MAC_ONLY = process.argv.includes("--mac-only");
+const MAC = join(GUIDE, "client", "mac");
+const MAC_ASSETS = join(MAC, "ForeverScout.Mac", "Assets");
+const MAC_ICONSET = join(MAC, "assets", "AppIcon.iconset");
 
 if (!existsSync(SRC)) throw new Error(`Saknar ${SRC}`);
 mkdirSync(RES, { recursive: true });
@@ -36,9 +46,11 @@ mkdirSync(WEB, { recursive: true });
 
 // ---------- Hela logotypen (bara inuti appen och på sajten – aldrig som ikon) ----------
 const full = await sharp(SRC).trim({ threshold: 4 }).png().toBuffer();
-await sharp(full).toFile(join(WIN, "assets", "logo-full.png"));
-await sharp(full).resize({ width: 360 }).png({ compressionLevel: 9 }).toFile(join(RES, "logo-header.png"));
-await sharp(full).resize({ width: 800, withoutEnlargement: true }).webp({ quality: 86, alphaQuality: 90 }).toFile(join(WEB, "logo-full.webp"));
+if (!MAC_ONLY) {
+  await sharp(full).toFile(join(WIN, "assets", "logo-full.png"));
+  await sharp(full).resize({ width: 360 }).png({ compressionLevel: 9 }).toFile(join(RES, "logo-header.png"));
+  await sharp(full).resize({ width: 800, withoutEnlargement: true }).webp({ quality: 86, alphaQuality: 90 }).toFile(join(WEB, "logo-full.webp"));
+}
 
 // Elden och vedträna (i originalets koordinater, 1536×1024), centrerat. Muggens vapen börjar vid x ≈ 865 och yxan
 // ligger uppe till vänster – båda faller utanför masken nedan.
@@ -134,6 +146,77 @@ const sizes = [16, 20, 24, 32, 48, 64, 128, 256];
 const fire = await fireLayer();
 const tiles = {};
 for (const s of sizes) tiles[s] = await fireTile(s, fire);
+
+// ---------- macOS: appikon (iconset + icns), menyradsikoner och logotyp ----------
+/** Appikon enligt macOS rutnät: rundad ruta (824/1024) centrerad på genomskinlig yta, med mjuk skugga. */
+async function macIcon(size) {
+  const inner = Math.round(size * 0.805);
+  const off = Math.round((size - inner) / 2);
+  const tile = inner <= 24 ? await simpleTile(inner) : await paintedTile(inner, fire);
+  const r = (inner * 0.225).toFixed(2), blur = Math.max(0.6, size / 90);
+  const shadow = Buffer.from(`<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg"><defs><filter id="b"><feGaussianBlur stdDeviation="${blur}"/></filter></defs>
+    <rect x="${off}" y="${off + size * 0.012}" width="${inner}" height="${inner}" rx="${r}" fill="#000" fill-opacity="0.35" filter="url(#b)"/></svg>`);
+  return sharp(shadow).composite([{ input: tile, left: off, top: off }]).png().toBuffer();
+}
+
+/** Menyradens mallbild: lägereldens siluett i svart med alfa (macOS färgar den efter ljust/mörkt läge). */
+function templateIcon(px) {
+  const svg = `<svg width="${px}" height="${px}" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><mask id="m">
+    <rect width="24" height="24" fill="#fff"/>
+    <path d="M12 10.4 C12.9 11.9 14 13 13.8 14.8 C13.6 16.1 12.9 16.7 12 16.7 C11.1 16.7 10.4 16.1 10.2 14.8 C10.1 13.6 10.9 12.9 11.3 12 C11.5 12.6 11.8 12.8 12 12.8 C11.8 12 11.8 11.2 12 10.4 Z" fill="#000"/></mask></defs>
+    <g mask="url(#m)"><path d="M12 2.2 C13.8 5.2 17.8 8 17.2 13.2 C16.8 16.5 14.6 18.2 12 18.2 C9.4 18.2 7.2 16.5 6.8 13.2 C6.4 10 8.6 8.6 9.4 6.6 C9.9 8.5 10.7 9.4 11.3 9.6 C11.1 7 11.1 4.4 12 2.2 Z" fill="#000"/></g>
+    <path d="M4.2 20.6 L19.4 17.2" stroke="#000" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M4.6 17.2 L19.8 20.6" stroke="#000" stroke-width="2.4" stroke-linecap="round"/></svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+/** Färgad eld utan ruta (menyraden vid uppladdning och fel). */
+async function colorTrayFire(px) {
+  const h = Math.round(px * 0.96), w = Math.round((h * CROP.width) / CROP.height);
+  const f = await sharp(fire).resize(w, h, { kernel: "lanczos3" }).modulate({ saturation: 1.15 }).sharpen({ sigma: 0.6 }).png().toBuffer();
+  return sharp({ create: { width: px, height: px, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: f, left: Math.round((px - w) / 2), top: px - h }]).png().toBuffer();
+}
+
+/** .icns med PNG-poster (macOS 10.7+). Typerna: ic04=16, ic05=32, ic07=128, ic08=256, ic09=512, ic10=1024 (512@2x),
+ *  ic11=32 (16@2x), ic12=64 (32@2x), ic13=256 (128@2x), ic14=512 (256@2x). */
+function icns(entries) {
+  const parts = entries.map(([type, png]) => {
+    const head = Buffer.alloc(8);
+    head.write(type, 0, "ascii");
+    head.writeUInt32BE(png.length + 8, 4);
+    return Buffer.concat([head, png]);
+  });
+  const body = Buffer.concat(parts);
+  const head = Buffer.alloc(8);
+  head.write("icns", 0, "ascii");
+  head.writeUInt32BE(body.length + 8, 4);
+  return Buffer.concat([head, body]);
+}
+
+{
+  mkdirSync(MAC_ASSETS, { recursive: true });
+  mkdirSync(MAC_ICONSET, { recursive: true });
+  const macSizes = [16, 32, 64, 128, 256, 512, 1024];
+  const mac = {};
+  for (const s of macSizes) mac[s] = await macIcon(s);
+  const set = [[16, "16x16"], [32, "16x16@2x"], [32, "32x32"], [64, "32x32@2x"], [128, "128x128"], [256, "128x128@2x"], [256, "256x256"], [512, "256x256@2x"], [512, "512x512"], [1024, "512x512@2x"]];
+  for (const [s, name] of set) writeFileSync(join(MAC_ICONSET, `icon_${name}.png`), mac[s]);
+  writeFileSync(join(MAC, "assets", "AppIcon.icns"), icns([
+    ["ic04", mac[16]], ["ic05", mac[32]], ["ic07", mac[128]], ["ic08", mac[256]], ["ic09", mac[512]], ["ic10", mac[1024]],
+    ["ic11", mac[32]], ["ic12", mac[64]], ["ic13", mac[256]], ["ic14", mac[512]],
+  ]));
+  await sharp(mac[256]).toFile(join(MAC_ASSETS, "app-256.png"));
+  // Menyraden: 36 px (= 18 pt @2x). Avalonia skalar bilden till menyradens höjd.
+  await sharp(await templateIcon(36)).toFile(join(MAC_ASSETS, "tray-template.png"));
+  const colorFire = await colorTrayFire(36);
+  await sharp(colorFire).composite([{ input: Buffer.from(overlay(36, "error")) }]).png().toFile(join(MAC_ASSETS, "tray-error.png"));
+  for (let f = 0; f < 4; f++)
+    await sharp(colorFire).composite([{ input: Buffer.from(overlay(36, "upload", f)) }]).png().toFile(join(MAC_ASSETS, `tray-upload-${f}.png`));
+  await sharp(full).resize({ width: 360 }).png({ compressionLevel: 9 }).toFile(join(MAC_ASSETS, "logo-header.png"));
+  console.log("macOS: client/mac/assets/AppIcon.icns + AppIcon.iconset/, client/mac/ForeverScout.Mac/Assets/*.png");
+}
+if (MAC_ONLY) process.exit(0);
 
 // ---------- app.ico (BMP-poster < 256, PNG för 256) ----------
 async function dib(png, s) {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using Microsoft.Win32;
 
 namespace ForeverScout.Core;
@@ -29,6 +30,12 @@ public sealed class SafeFsException(string reason, string path) : ScoutException
 /// </list>
 /// Sökvägar normaliseras (GetFullPath, skiftlägesokänsligt). <c>..</c>, UNC/nätverks- och enhetssökvägar (\\…, \\?\…),
 /// alternativa dataströmmar (<c>:</c>) och symlänkar/junctions (reparse points) inom de tillåtna områdena nekas.
+/// <para><b>macOS</b> (client/mac): samma regler under spelkatalogen (t.ex. <c>/Applications/World of Warcraft/_forever_</c>),
+/// med <c>/</c> som avgränsare och skiftlägesokänslig jämförelse (APFS är oftast skiftlägesokänsligt). I stället för
+/// %APPDATA%, registret och exe-bytet gäller: <c>~/Library/Application Support/ForeverScout/**</c> (katalogen 0700),
+/// exakt filen <c>~/Library/LaunchAgents/se.wow4ever.foreverscout.plist</c> ("Starta vid inloggning"), det egna
+/// <c>.app</c>-paketet (bara som helhet, för bytet) och uppdateringskatalogen <c>.ForeverScout-update</c> bredvid det.
+/// <c>..</c>, relativa sökvägar, <c>..namedfork</c> (resursgrenar) och symlänkar nekas. Windows-vägen är oförändrad.</para>
 /// </summary>
 public static class SafeFs
 {
@@ -38,6 +45,16 @@ public static class SafeFs
     private static string? _appData;
 
     public enum Access { Probe, Read, Write }
+
+    /// <summary>Unix-sökvägar (macOS). Windows: false, och då körs exakt samma kod som före macOS-stödet.</summary>
+    [UnsupportedOSPlatformGuard("windows")]
+    internal static bool Unix => !OperatingSystem.IsWindows();
+
+    /// <summary>Katalogavgränsaren i normaliserade sökvägar.</summary>
+    private static char Sep => Unix ? '/' : '\\';
+
+    /// <summary>macOS: paket-id (Info.plist CFBundleIdentifier, LaunchAgent-etikett, nyckelringens tjänst).</summary>
+    public const string MacBundleId = "se.wow4ever.foreverscout";
 
     // ------------------------------------------------------------------ konfiguration
 
@@ -49,13 +66,15 @@ public static class SafeFs
             lock (Lock)
             {
                 if (_appData != null) return _appData;
-                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ForeverScout");
+                string dir = Unix
+                    ? Path.Combine(Home, "Library", "Application Support", "ForeverScout")
+                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ForeverScout");
 #if DEBUG
                 var env = Environment.GetEnvironmentVariable("FOREVERSCOUT_DATADIR");
                 if (!string.IsNullOrWhiteSpace(env)) dir = env;
 #endif
                 var n = Normalize(dir);
-                Directory.CreateDirectory(n);
+                if (Unix) CreatePrivateDirectory(n); else Directory.CreateDirectory(n);
                 _appData = RealPath(n);
                 return _appData;
             }
@@ -68,9 +87,21 @@ public static class SafeFs
         lock (Lock)
         {
             var n = Normalize(dir);
-            Directory.CreateDirectory(n);
+            if (Unix) CreatePrivateDirectory(n); else Directory.CreateDirectory(n);
             _appData = RealPath(n);
         }
+    }
+
+    /// <summary>macOS: hemkatalogen ($HOME).</summary>
+    private static string Home => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    /// <summary>macOS: appens datakatalog skapas (och hålls) med rättigheterna 0700 – bara användaren själv.</summary>
+    [UnsupportedOSPlatform("windows")]
+    private static void CreatePrivateDirectory(string dir)
+    {
+        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        Directory.CreateDirectory(dir, Private);
+        File.SetUnixFileMode(dir, Private);
     }
 
     /// <summary>
@@ -113,6 +144,7 @@ public static class SafeFs
     /// <summary>Följer symlänkar/junctions i en (redan normaliserad) sökvägs befintliga komponenter.</summary>
     public static string RealPath(string full)
     {
+        if (Unix) return RealPathUnix(full, 0);
         var parts = full.Split('\\', StringSplitOptions.RemoveEmptyEntries);
         var cur = parts[0] + "\\";
         for (int i = 1; i < parts.Length; i++)
@@ -134,11 +166,60 @@ public static class SafeFs
         return cur.Length > 3 ? cur.TrimEnd('\\') : cur;
     }
 
+    /// <summary>macOS: som <see cref="RealPath"/> – symlänkar i valets befintliga komponenter följs (t.ex. /var → /private/var).</summary>
+    private static string RealPathUnix(string full, int depth)
+    {
+        if (depth > 16) throw new SafeFsException("link-loop", full);
+        var parts = full.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var cur = "/";
+        for (int i = 0; i < parts.Length; i++)
+        {
+            cur = cur == "/" ? "/" + parts[i] : cur + "/" + parts[i];
+            try
+            {
+                var fi = new FileInfo(cur);
+                if (fi.LinkTarget is not null && fi.ResolveLinkTarget(returnFinalTarget: true) is { } t)
+                {
+                    var rest = string.Join('/', parts.Skip(i + 1));
+                    var target = RealPathUnix(NormalizeUnix(t.FullName), depth + 1);
+                    return rest.Length == 0 ? target : RealPathUnix(NormalizeUnix(target + "/" + rest), depth + 1);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        return cur;
+    }
+
+    /// <summary>
+    /// macOS: absolut sökväg med <c>/</c>. Nekar tomt, relativt, <c>..</c>, <c>//</c> i början, NUL, jokertecken,
+    /// bakstreck och resursgrenar (<c>..namedfork</c>). <c>.</c> och dubbla <c>/</c> tas bort. Ren strängbehandling
+    /// (ingen GetFullPath), så att reglerna kan testas på alla plattformar.
+    /// </summary>
+    internal static string NormalizeUnix(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new SafeFsException("empty", path ?? "");
+        var p = path.Trim();
+        if (!p.StartsWith('/')) throw new SafeFsException("not-absolute", path);
+        if (p.StartsWith("//", StringComparison.Ordinal)) throw new SafeFsException("unc-or-device", path);
+        if (p.Contains('\0') || p.Contains('\\') || p.Contains('*') || p.Contains('?')) throw new SafeFsException("chars", path);
+        var kept = new List<string>();
+        foreach (var seg in p.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (seg == "..") throw new SafeFsException("dotdot", path);
+            if (seg == ".") continue;
+            if (seg.StartsWith("..namedfork", StringComparison.OrdinalIgnoreCase)) throw new SafeFsException("stream", path);
+            kept.Add(seg);
+        }
+        return "/" + string.Join('/', kept);
+    }
+
     // ------------------------------------------------------------------ policy
 
     /// <summary>Normaliserar och nekar trasiga/farliga former. Kastar <see cref="SafeFsException"/>.</summary>
     public static string Normalize(string path)
     {
+        if (Unix) return NormalizeUnix(path);
         if (string.IsNullOrWhiteSpace(path)) throw new SafeFsException("empty", path ?? "");
         var p = path.Trim().Replace('/', '\\');
         if (p.StartsWith(@"\\", StringComparison.Ordinal)) throw new SafeFsException("unc-or-device", path);
@@ -155,8 +236,8 @@ public static class SafeFs
     private static string[] Rel(string full, string root)
     {
         if (full.Equals(root, StringComparison.OrdinalIgnoreCase)) return [];
-        if (!full.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase)) return null!;
-        return full[(root.Length + 1)..].Split('\\');
+        if (!full.StartsWith(root + Sep, StringComparison.OrdinalIgnoreCase)) return null!;
+        return full[(root.Length + 1)..].Split(Sep);
     }
 
     private static bool Eq(string a, string b) => a.Equals(b, StringComparison.OrdinalIgnoreCase);
@@ -222,6 +303,7 @@ public static class SafeFs
     /// </summary>
     private static bool IsOwnExeFile(string full)
     {
+        if (Unix) return false; // macOS byter hela .app-paketet (MacRule), inga .new/.old-filer bredvid binären
         var exe = OwnExe;
         var stem = exe[..^4];
         if (Eq(full, exe) || Eq(full, stem + ".new.exe") || Eq(full, stem + ".new.exe.tmp") || Eq(full, stem + ".old.exe")) return true;
@@ -234,6 +316,7 @@ public static class SafeFs
     /// <summary>Självuppdateringens filer som finns bredvid exe:n (.new.exe, .new.exe.tmp, .old.exe, .old-*.exe).</summary>
     public static List<string> OwnExeLeftovers()
     {
+        if (Unix) return [];
         var exe = OwnExe;
         var dir = Path.GetDirectoryName(exe)!;
         var stemName = Path.GetFileNameWithoutExtension(exe);
@@ -267,10 +350,76 @@ public static class SafeFs
                 foreach (var pr in ProbeRoots)
                     if (Rel(full, pr) is { } rp && ProbeRule(rp, isDir) is { } a) { allowed = a; scopeRoot = pr; break; }
         }
+        if (allowed is null && Unix && MacRule(full, isDir) is ({ } ma, { } ms)) { allowed = ma; scopeRoot = ms; }
         if (allowed is null && !isDir && IsOwnExeFile(full)) { allowed = Access.Write; scopeRoot = full; }
         if (allowed is null || allowed < want) throw new SafeFsException(allowed is null ? "outside" : "access", full);
         RefuseReparsePoints(full, scopeRoot!);
         return full;
+    }
+
+    // ------------------------------------------------------------------ macOS: paketet, uppdateringen och LaunchAgent
+
+    /// <summary>Bara för tester: låtsas att appens .app-paket ligger här.</summary>
+    internal static string? OwnBundleOverride { get; set; }
+
+    /// <summary>
+    /// macOS: det .app-paket som appen körs från (…/Forever Scout.app), eller null (t.ex. <c>dotnet run</c> utan paket).
+    /// Binären ligger i <c>Contents/MacOS/</c> (eller <c>Contents/MacOS/&lt;arkitektur&gt;/</c> i det universella paketet).
+    /// </summary>
+    public static string? OwnBundle
+    {
+        get
+        {
+            if (!Unix) return null;
+            if (OwnBundleOverride is { } o) return NormalizeUnix(o);
+            if (OwnExeOverride is { } e) return BundleOf(e);
+            // Läses en gång: under bytet flyttas paketet, och då får regeln inte börja peka på den gamla kopian.
+            lock (Lock)
+            {
+                if (!_ownBundleRead) { _ownBundle = Environment.ProcessPath is { } exe ? BundleOf(exe) : null; _ownBundleRead = true; }
+                return _ownBundle;
+            }
+        }
+    }
+
+    private static string? _ownBundle;
+    private static bool _ownBundleRead;
+
+    /// <summary>Närmaste överordnade <c>*.app</c>-katalog som innehåller <c>Contents/MacOS</c> (ren strängbehandling).</summary>
+    internal static string? BundleOf(string exePath)
+    {
+        string full;
+        try { full = NormalizeUnix(exePath); } catch (SafeFsException) { return null; }
+        var parts = full.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = parts.Length - 3; i >= 0; i--)
+            if (parts[i].EndsWith(".app", StringComparison.OrdinalIgnoreCase) && parts[i].Length > 4
+                && Eq(parts[i + 1], "Contents") && Eq(parts[i + 2], "MacOS"))
+                return "/" + string.Join('/', parts.Take(i + 1));
+        return null;
+    }
+
+    /// <summary>macOS: uppdateringens arbetskatalog bredvid paketet (samma volym, så att bytet blir ett namnbyte).</summary>
+    public static string? BundleUpdateDir => OwnBundle is { } b ? UpdateDirFor(b) : null;
+
+    internal static string UpdateDirFor(string bundle) => (Path.GetDirectoryName(bundle) ?? "/").Replace('\\', '/').TrimEnd('/') + "/.ForeverScout-update";
+
+    /// <summary>macOS: "Starta vid inloggning" = exakt den här filen.</summary>
+    public static string LaunchAgentPath => NormalizeUnix(Home.TrimEnd('/') + "/Library/LaunchAgents/" + MacBundleId + ".plist");
+
+    /// <summary>Vad får göras med en sökväg som hör till macOS-specifika delar? (åtkomst, område för symlänkskontrollen)</summary>
+    private static (Access?, string?) MacRule(string full, bool isDir)
+    {
+        var bundle = OwnBundle;
+        if (bundle is not null)
+        {
+            if (isDir && Eq(full, bundle)) return (Access.Write, full);                // hela paketet flyttas vid bytet
+            var upd = UpdateDirFor(bundle);
+            if (Rel(full, upd) is not null) return (Access.Write, upd);              // .ForeverScout-update/**
+        }
+        var agent = LaunchAgentPath;
+        if (!isDir && (Eq(full, agent) || Eq(full, agent + ".tmp"))) return (Access.Write, full);
+        if (isDir && Eq(full, NormalizeUnix(Path.GetDirectoryName(agent)!.Replace('\\', '/')))) return (Access.Write, full);
+        return (null, null);
     }
 
     /// <summary>Nekar symlänkar/junctions i de komponenter som ligger inom det tillåtna området.</summary>
@@ -283,6 +432,7 @@ public static class SafeFs
             {
                 var attr = File.GetAttributes(cur);
                 if ((attr & FileAttributes.ReparsePoint) != 0) throw new SafeFsException("reparse-point", cur);
+                if (Unix && new FileInfo(cur).LinkTarget is not null) throw new SafeFsException("reparse-point", cur);
             }
             catch (FileNotFoundException) { }
             catch (DirectoryNotFoundException) { }
@@ -400,7 +550,7 @@ public static class SafeFs
     public static void OpenWithShell(string path)
     {
         var p = Check(path, Access.Read, isDir: false);
-        if (!p.StartsWith(AppDataDir + "\\", StringComparison.OrdinalIgnoreCase)) throw new SafeFsException("not-appdata", p);
+        if (!p.StartsWith(AppDataDir + Sep, StringComparison.OrdinalIgnoreCase)) throw new SafeFsException("not-appdata", p);
         Process.Start(new ProcessStartInfo(p) { UseShellExecute = true });
     }
 
@@ -409,6 +559,9 @@ public static class SafeFs
     /// <summary>Standardsökvägar där WoW brukar ligga (bara existens kontrolleras).</summary>
     public static List<string> StandardWowRoots()
     {
+        // macOS: Battle.net installerar i /Applications/World of Warcraft (spelet i _forever_ under den), ibland i
+        // ~/Applications. Andra volymer listas inte – där väljer användaren själv.
+        if (Unix) return ["/Applications/World of Warcraft", NormalizeUnix(Home.TrimEnd('/') + "/Applications/World of Warcraft")];
         var list = new List<string>();
         foreach (var b in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles) })
             if (!string.IsNullOrEmpty(b)) list.Add(Path.Combine(b, "World of Warcraft"));
@@ -435,6 +588,7 @@ public static class SafeFs
     /// <summary>Den ENDA registerläsningen: HKLM\SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft, värdet InstallPath.</summary>
     public static string? ReadWowInstallPath()
     {
+        if (!OperatingSystem.IsWindows()) return null; // macOS har inget register; standardsökvägarna och valet räcker
         try
         {
             using var key = Registry.LocalMachine.OpenSubKey(WowRegistryKey, writable: false);
@@ -451,6 +605,7 @@ public static class SafeFs
     {
         get
         {
+            if (!OperatingSystem.IsWindows()) return FileExists(LaunchAgentPath); // macOS: finns LaunchAgent-filen?
             try { using var k = Registry.CurrentUser.OpenSubKey(RunKey, writable: false); return k?.GetValue(RunName) is string; }
             catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { return false; }
         }
@@ -458,8 +613,126 @@ public static class SafeFs
 
     public static void SetAutostart(bool on)
     {
+        if (!OperatingSystem.IsWindows()) { SetLaunchAgent(on); return; }
         using var k = Registry.CurrentUser.CreateSubKey(RunKey);
         if (on) k.SetValue(RunName, $"\"{OwnExe}\" --tray");
         else k.DeleteValue(RunName, throwOnMissingValue: false);
+    }
+
+    // ------------------------------------------------------------------ macOS: inloggning, verktyg och lås
+
+    /// <summary>
+    /// macOS "Starta vid inloggning": skriver eller tar bort ~/Library/LaunchAgents/se.wow4ever.foreverscout.plist.
+    /// Programmet startas via <c>/usr/bin/open -g -a &lt;paket&gt; --args --tray</c> (LaunchServices, ingen Dock-ikon,
+    /// inget fönster). Utan paket (utvecklingskörning) startas binären direkt.
+    /// </summary>
+    private static void SetLaunchAgent(bool on)
+    {
+        var agent = LaunchAgentPath;
+        if (!on) { DeleteFile(agent); return; }
+        string[] args = OwnBundle is { } b
+            ? ["/usr/bin/open", "-g", "-a", b, "--args", "--tray"]
+            : [Normalize(OwnExeOverride ?? Environment.ProcessPath ?? throw new SafeFsException("no-exe", "")), "--tray"];
+        CreateDirectory(Path.GetDirectoryName(agent)!);
+        WriteAllText(agent, LaunchAgentPlist(args));
+    }
+
+    /// <summary>LaunchAgent-filens innehåll (ren funktion, testas).</summary>
+    internal static string LaunchAgentPlist(IReadOnlyList<string> programArguments)
+    {
+        static string X(string s) => System.Security.SecurityElement.Escape(s) ?? "";
+        var sb = new System.Text.StringBuilder();
+        sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.Append("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
+        sb.Append("<plist version=\"1.0\">\n<dict>\n");
+        sb.Append("  <key>Label</key>\n  <string>").Append(MacBundleId).Append("</string>\n");
+        sb.Append("  <key>ProgramArguments</key>\n  <array>\n");
+        foreach (var a in programArguments) sb.Append("    <string>").Append(X(a)).Append("</string>\n");
+        sb.Append("  </array>\n");
+        sb.Append("  <key>RunAtLoad</key>\n  <true/>\n");
+        sb.Append("  <key>LimitLoadToSessionType</key>\n  <string>Aqua</string>\n");
+        sb.Append("  <key>ProcessType</key>\n  <string>Interactive</string>\n");
+        // Systeminställningar → Inloggningsobjekt visar då appens namn och ikon i stället för utvecklarens namn.
+        sb.Append("  <key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>").Append(MacBundleId).Append("</string>\n  </array>\n");
+        sb.Append("</dict>\n</plist>\n");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Exklusivt lås på en fil i appdatakatalogen (på macOS ett flock-lås som släpps när processen dör). Null om en
+    /// annan process redan håller det. Används för "en instans" på macOS.
+    /// </summary>
+    public static IDisposable? TryLockFile(string path)
+    {
+        var p = Check(path, Access.Write, isDir: false);
+        if (!p.StartsWith(AppDataDir + Sep, StringComparison.OrdinalIgnoreCase)) throw new SafeFsException("not-appdata", p);
+        try { return new FileStream(p, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>
+    /// macOS: packar upp en (redan verifierad) zip med <c>/usr/bin/ditto -x -k</c>, som bevarar kodsignaturen,
+    /// rättigheter och symlänkar i ett .app-paket. Både zip-filen och målet måste vara tillåtna (uppdateringskatalogen).
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    public static void MacExtractZip(string zip, string destDir)
+    {
+        var z = Check(zip, Access.Read, isDir: false);
+        var d = Check(destDir, Access.Write, isDir: true);
+        var (code, _, err) = RunTool("/usr/bin/ditto", ["-x", "-k", z, d], TimeSpan.FromMinutes(3));
+        if (code != 0) throw new IOException("ditto " + code + ": " + Privacy.Redact(err.Trim()));
+    }
+
+    /// <summary>macOS: Team ID ur ett pakets kodsignatur (<c>codesign -dv</c>), eller null om paketet inte är signerat.</summary>
+    [UnsupportedOSPlatform("windows")]
+    public static string? MacCodesignTeam(string bundle)
+    {
+        var b = Check(bundle, Access.Read, isDir: true);
+        var (code, _, err) = RunTool("/usr/bin/codesign", ["-dv", "--verbose=2", b], TimeSpan.FromMinutes(1));
+        return code == 0 ? ParseTeamIdentifier(err) : null;
+    }
+
+    /// <summary>"TeamIdentifier=ABCDE12345" ur codesigns utskrift; null för "not set" eller ogiltigt.</summary>
+    internal static string? ParseTeamIdentifier(string codesignOutput)
+    {
+        foreach (var raw in codesignOutput.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith("TeamIdentifier=", StringComparison.Ordinal)) continue;
+            var v = line["TeamIdentifier=".Length..].Trim();
+            return v.Length is >= 1 and <= 20 && v.All(char.IsAsciiLetterOrDigit) ? v : null;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// macOS: <c>codesign --verify --deep --strict -R=&lt;krav&gt;</c> på ett paket i uppdateringskatalogen eller det egna.
+    /// True bara om signaturen är giltig och uppfyller kravet (t.ex. samma Team ID och paket-id som den körande appen).
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    public static bool MacVerifyCodeSignature(string bundle, string requirement)
+    {
+        var b = Check(bundle, Access.Read, isDir: true);
+        var (code, _, _) = RunTool("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=" + requirement, b], TimeSpan.FromMinutes(3));
+        return code == 0;
+    }
+
+    /// <summary>Kör ett av systemets verktyg (fast sökväg, inget skal, argument som lista).</summary>
+    [UnsupportedOSPlatform("windows")]
+    private static (int Code, string Out, string Err) RunTool(string tool, IReadOnlyList<string> args, TimeSpan timeout)
+    {
+        var psi = new ProcessStartInfo(tool) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi) ?? throw new IOException(tool);
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(timeout))
+        {
+            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            throw new IOException(Path.GetFileName(tool) + " timeout");
+        }
+        p.WaitForExit();
+        return (p.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
     }
 }

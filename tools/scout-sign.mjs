@@ -10,8 +10,15 @@
 //       [--exe-lite <lite/ForeverScout.exe>] [--lite-version x.y.z]
 //       [--setup <ForeverScout-Setup-x.y.z.exe>] [--setup-version x.y.z]
 //       [--addon <ForeverScout-addon.zip>] [--addon-version x.y.z] [--out public/scout] [--block 0.9.0,0.9.1]
-//       Kopierar filerna till <out> (ForeverScout.exe, ForeverScout-addon.zip) och skriver <out>/version.json.
-//       En del som inte anges (t.ex. bara --addon) behålls från befintlig version.json med sin gamla filsignatur.
+//       [--mac <ForeverScout-mac.zip>] [--mac-version x.y.z] [--allow-unnotarized]
+//       Kopierar filerna till <out> (ForeverScout.exe, ForeverScout-addon.zip, ForeverScout-mac.zip) och skriver
+//       <out>/version.json. En del som inte anges (t.ex. bara --addon) behålls från befintlig version.json med sin
+//       gamla filsignatur.
+//
+//   --mac: zip:en med det FÄRDIGA macOS-paketet – kodsignerat (Developer ID), notariserat och staplat
+//       (client/mac/build.sh). Vår signatur läggs alltså ovanpå Apples. Skriptet kontrollerar att zip:en innehåller
+//       *.app/Contents/Info.plist, _CodeSignature/CodeResources och den staplade biljetten Contents/CodeResources;
+//       --allow-unnotarized hoppar över de två sista (bara för test, släpp aldrig en sådan fil).
 //
 // Format (måste matcha client/windows/src/ForeverScout.Core/ReleaseVerifier.cs):
 //   - Filsignatur (clientSig/addonSig) över UTF-8 "ForeverScout-file/v1\n<client|addon>\n<version>\n<sha256 hex>".
@@ -21,6 +28,9 @@
 //     Nya klienter verifierar signature2 och väljer fil efter variant (full → clientFile, lite → liteFile).
 //   - Lite-filens filsignatur: kind "lite". Installationsprogrammet (setup, setupFile, setupSha256, setupSig) ingår
 //     också i signature2 (kind "setup") – det används inte för uppdateringar, bara för nedladdningssidan.
+//   - signature3 (macOS-klienten) över SIGNED_FIELDS_3 = SIGNED_FIELDS_2 + mac, macFile, macSha256, macSig. Skrivs
+//     alltid (saknat = null). Windows-klienterna läser den inte; signature och signature2 är oförändrade.
+//     Mac-filens filsignatur: kind "mac".
 //   - Signaturer: base64 av IEEE P1363 (r||s, 64 byte).
 //   blockedAddons ingår inte i signaturen (servern kan lägga till via SCOUT_BLOCKED_ADDONS).
 // Servern ska skicka de signerade fälten och "signature" oförändrade i GET /api/bidrag/version.
@@ -35,11 +45,14 @@ const SIGNED_FIELDS = ["addon", "addonFile", "addonSha256", "addonSig", "client"
 const LITE_FIELDS = ["lite", "liteFile", "liteSha256", "liteSig"];
 const SETUP_FIELDS = ["setup", "setupFile", "setupSha256", "setupSig"];
 const SIGNED_FIELDS_2 = [...SIGNED_FIELDS, ...LITE_FIELDS, ...SETUP_FIELDS].sort();
+const MAC_FIELDS = ["mac", "macFile", "macSha256", "macSig"];
+const SIGNED_FIELDS_3 = [...SIGNED_FIELDS_2, ...MAC_FIELDS].sort();
 const VERSION = /^\d{1,4}(\.\d{1,6}){0,3}([-+][0-9A-Za-z.]{1,20})?$/;
 const CLIENT_FILE = "ForeverScout.exe";
 const LITE_FILE = "ForeverScout-lite.exe";
 const SETUP_FILE = "ForeverScout-Setup.exe";
 const ADDON_FILE = "ForeverScout-addon.zip";
+const MAC_FILE = "ForeverScout-mac.zip";
 
 function args(argv) {
   const out = {};
@@ -65,7 +78,44 @@ export function canonical(obj, fields = SIGNED_FIELDS) {
 }
 
 export const canonical2 = (obj) => canonical(obj, SIGNED_FIELDS_2);
-export { SIGNED_FIELDS, SIGNED_FIELDS_2 };
+export const canonical3 = (obj) => canonical(obj, SIGNED_FIELDS_3);
+export { SIGNED_FIELDS, SIGNED_FIELDS_2, SIGNED_FIELDS_3 };
+
+/** Namnen på posterna i en zip (centralkatalogen; zip64 stöds inte – macOS-zip:en är långt under 4 GB). */
+export function zipEntryNames(buf) {
+  const min = Math.max(0, buf.length - 65557);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= min; i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error("hittar inte zip:ens slutpost");
+  const count = buf.readUInt16LE(eocd + 10), size = buf.readUInt32LE(eocd + 12), offset = buf.readUInt32LE(eocd + 16);
+  if (count === 0xffff || size === 0xffffffff || offset === 0xffffffff) throw new Error("zip64 stöds inte");
+  const names = [];
+  let p = offset;
+  for (let k = 0; k < count; k++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("trasig centralkatalog");
+    const n = buf.readUInt16LE(p + 28), x = buf.readUInt16LE(p + 30), c = buf.readUInt16LE(p + 32);
+    names.push(buf.subarray(p + 46, p + 46 + n).toString("utf8"));
+    p += 46 + n + x + c;
+  }
+  return names;
+}
+
+/** Kontrollerar att zip:en är ett macOS-paket som är kodsignerat och (om inte allowUnnotarized) staplat. */
+export function checkMacZip(buf, allowUnnotarized = false) {
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) return "--mac ska vara en zip (ditto -c -k --keepParent Forever\\ Scout.app)";
+  let names;
+  try { names = zipEntryNames(buf); } catch (e) { return `--mac: ${e.message}`; }
+  const apps = new Set(names.map((n) => n.match(/^([^/]+\.app)\//)?.[1]).filter(Boolean));
+  if (apps.size !== 1) return "--mac ska innehålla exakt ett .app-paket i roten";
+  const [app] = apps;
+  const has = (rel) => names.includes(`${app}/${rel}`);
+  if (!has("Contents/Info.plist")) return `--mac: ${app}/Contents/Info.plist saknas`;
+  if (!has("Contents/MacOS/ForeverScout")) return `--mac: ${app}/Contents/MacOS/ForeverScout saknas`;
+  if (allowUnnotarized) return null;
+  if (!has("Contents/_CodeSignature/CodeResources")) return "--mac: paketet är inte kodsignerat (_CodeSignature saknas) – kör build.sh med signering";
+  if (!has("Contents/CodeResources")) return "--mac: ingen staplad notariseringsbiljett (Contents/CodeResources) – kör xcrun stapler staple före zip";
+  return null;
+}
 
 export function fileMessage(kind, version, sha256) {
   return Buffer.from(`ForeverScout-file/v1\n${kind}\n${version}\n${sha256.toLowerCase()}`, "utf8");
@@ -89,7 +139,9 @@ function genkey(dir) {
 function release(a) {
   if (typeof a.key !== "string") fail("--key <privat.pem> krävs");
   if (typeof a.version !== "string" || !VERSION.test(a.version)) fail("--version x.y.z krävs");
-  if (!a.exe && !a["exe-lite"] && !a.setup && !a.addon) fail("ange --exe, --exe-lite, --setup och/eller --addon");
+  if (!a.exe && !a["exe-lite"] && !a.setup && !a.addon && !a.mac) fail("ange --exe, --exe-lite, --setup, --addon och/eller --mac");
+  const macVersion = typeof a["mac-version"] === "string" ? a["mac-version"] : a.version;
+  if (!VERSION.test(macVersion)) fail("ogiltig --mac-version");
   const setupVersion = typeof a["setup-version"] === "string" ? a["setup-version"] : a.version;
   if (!VERSION.test(setupVersion)) fail("ogiltig --setup-version");
   const liteVersion = typeof a["lite-version"] === "string" ? a["lite-version"] : a.version;
@@ -107,7 +159,7 @@ function release(a) {
   const prev = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
 
   const m = { v: 1 };
-  for (const k of SIGNED_FIELDS_2) if (k !== "v" && k !== "issued" && prev[k] !== undefined) m[k] = prev[k];
+  for (const k of SIGNED_FIELDS_3) if (k !== "v" && k !== "issued" && prev[k] !== undefined) m[k] = prev[k];
 
   if (a.exe) {
     if (typeof a.exe !== "string" || !existsSync(a.exe)) fail(`hittar inte --exe ${a.exe}`);
@@ -143,9 +195,18 @@ function release(a) {
     copyFileSync(a.addon, join(out, ADDON_FILE));
     Object.assign(m, { addon: addonVersion, addonFile: ADDON_FILE, addonSha256: h, addonSig: signB64(privateKey, fileMessage("addon", addonVersion, h)) });
   }
+  if (a.mac) {
+    if (typeof a.mac !== "string" || !existsSync(a.mac)) fail(`hittar inte --mac ${a.mac}`);
+    const buf = readFileSync(a.mac);
+    const problem = checkMacZip(buf, a["allow-unnotarized"] === true);
+    if (problem) fail(problem);
+    const h = sha256(buf);
+    copyFileSync(a.mac, join(out, MAC_FILE));
+    Object.assign(m, { mac: macVersion, macFile: MAC_FILE, macSha256: h, macSig: signB64(privateKey, fileMessage("mac", macVersion, h)) });
+  }
   // Behållna delar måste fortfarande verifiera mot samma nyckel.
-  for (const [kind, ver, sh, sig] of [["client", m.client, m.sha256, m.clientSig], ["lite", m.lite, m.liteSha256, m.liteSig], ["setup", m.setup, m.setupSha256, m.setupSig], ["addon", m.addon, m.addonSha256, m.addonSig]]) {
-    if (ver && !verifyB64(publicKey, fileMessage(kind, ver, sh), sig)) fail(`befintlig ${kind}-signatur stämmer inte med nyckeln – signera om med --${kind === "client" ? "exe" : kind === "lite" ? "exe-lite" : kind === "setup" ? "setup" : "addon"}`);
+  for (const [kind, ver, sh, sig] of [["client", m.client, m.sha256, m.clientSig], ["lite", m.lite, m.liteSha256, m.liteSig], ["setup", m.setup, m.setupSha256, m.setupSig], ["addon", m.addon, m.addonSha256, m.addonSig], ["mac", m.mac, m.macSha256, m.macSig]]) {
+    if (ver && !verifyB64(publicKey, fileMessage(kind, ver, sh), sig)) fail(`befintlig ${kind}-signatur stämmer inte med nyckeln – signera om med --${kind === "client" ? "exe" : kind === "lite" ? "exe-lite" : kind === "setup" ? "setup" : kind === "mac" ? "mac" : "addon"}`);
   }
   m.issued = new Date().toISOString();
 
@@ -160,13 +221,17 @@ function release(a) {
   if (!verifyB64(publicKey, Buffer.from(canonical(m), "utf8"), signature)) fail("självkontrollen av signaturen misslyckades");
   const signature2 = signB64(privateKey, Buffer.from(canonical2(m), "utf8"));
   if (!verifyB64(publicKey, Buffer.from(canonical2(m), "utf8"), signature2)) fail("självkontrollen av signature2 misslyckades");
-  const manifest = { ...m, blockedAddons: [...blocked], signature, signature2 };
+  // signature3: alla fält inklusive mac-fälten – bara macOS-klienten läser den.
+  const signature3 = signB64(privateKey, Buffer.from(canonical3(m), "utf8"));
+  if (!verifyB64(publicKey, Buffer.from(canonical3(m), "utf8"), signature3)) fail("självkontrollen av signature3 misslyckades");
+  const manifest = { ...m, blockedAddons: [...blocked], signature, signature2, signature3 };
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   console.log(`Skrev ${manifestPath}`);
   if (a.exe) console.log(`  klient ${m.client}  sha256 ${m.sha256}`);
   if (a["exe-lite"]) console.log(`  lite   ${m.lite}  sha256 ${m.liteSha256}`);
   if (a.setup) console.log(`  setup  ${m.setup}  sha256 ${m.setupSha256}`);
   if (a.addon) console.log(`  addon  ${m.addon}  sha256 ${m.addonSha256}`);
+  if (a.mac) console.log(`  mac    ${m.mac}  sha256 ${m.macSha256}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

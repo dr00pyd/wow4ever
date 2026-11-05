@@ -37,6 +37,13 @@ public static class ErrorCodes
     public const string AccessDenied = "access-denied";
     public const string NotOurFile = "not-our-file";
     public const string UpdateFailed = "update-failed";
+    // macOS (client/mac)
+    /// <summary>Appen körs från en tillfällig, skrivskyddad kopia (App Translocation) – flytta den till Program först.</summary>
+    public const string AppTranslocated = "app-translocated";
+    /// <summary>Den nya versionens Apple-kodsignatur är ogiltig eller kommer från en annan utvecklare.</summary>
+    public const string CodeSignatureInvalid = "codesign-invalid";
+    /// <summary>Appen körs inte från ett .app-paket (t.ex. utvecklingskörning) och kan inte byta ut sig själv.</summary>
+    public const string NoBundle = "no-bundle";
 
     /// <summary>Alla koder (används av testet som kräver sv- och en-text för varje).</summary>
     public static IEnumerable<string> All =>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Minsta möjliga rättigheter för en .NET 10-app med hardened runtime (codesign -o runtime):
+  - allow-jit: .NET:s JIT skriver maskinkod i minne som mappas med MAP_JIT (W^X). Utan den kraschar appen direkt.
+  Inget annat: ingen sandlåda (appen läser WoW-katalogen och skriver addonen), inga nätverks-, kamera- eller
+  filrättigheter som kräver entitlements, ingen disable-library-validation (alla dylibs signeras med samma Developer ID),
+  inga DYLD-miljövariabler. Se client/mac/README.md, "Felsökning", om en framtida .NET-version kräver mer.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+</dict>
+</plist>

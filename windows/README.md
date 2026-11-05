@@ -88,7 +88,7 @@ Knappen **Öppna logg** finns i Inställningar.
 ## Filer
 | Sökväg | Innehåll |
 |---|---|
-| `src/ForeverScout.Core/` | `SafeFs` (enda fil-/registeråtkomsten), Lua-parser, statistik, katalogsökning, filbevakning (`SyncCoordinator`), API-klient, uppladdning/kö, logg och "visa vad som skickas", addoninstallation, signaturkontroll, självuppdatering |
+| `src/ForeverScout.Core/` | `SafeFs` (enda fil-/registeråtkomsten), Lua-parser, statistik, katalogsökning, filbevakning (`SyncCoordinator`), API-klient, uppladdning/kö, logg och "visa vad som skickas", addoninstallation, signaturkontroll, självuppdatering. Byggs för `net10.0-windows` (den här appen) och `net10.0` (macOS-appen i `client/mac`, se dess README); Windows-vägen i koden är oförändrad |
 | `src/ForeverScout/` | WinForms-gränssnitt (Lägereld-färger från `app/globals.css`), DPAPI-nyckel, systemfältsikon, `app.manifest`, `app.ico` |
 | `tests/` | xUnit: parser, statistik (även mot `client/fixtures/*.lua`), katalogsökning, SafeFs (traversal, symlänkar, UNC, andra enheter), statisk vakt, signaturer, debounce/hash-skip/dirty/halvskriven fil, sv+en |
 | `tools/make-icons.mjs` | Ikoner och logotyper ur `assets/Alliance Campfire Emblem.png` (sharp). Se "Ikoner" |

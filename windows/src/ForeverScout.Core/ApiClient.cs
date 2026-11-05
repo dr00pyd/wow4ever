@@ -218,6 +218,16 @@ public sealed class ApiClient : IDisposable
         return ReleaseVerifier.Verify(json, publicKeyPem);
     }
 
+    /// <summary>
+    /// macOS: samma versionsinfo, men verifierad med signature3 (<see cref="ReleaseVerifier.VerifyMac"/>) så att
+    /// mac-fälten (macFile, macSha256, macSig) är signerade. Saknas signature3 blir det ett fel, ingen reserv.
+    /// </summary>
+    public async Task<SignedRelease> MacVersionAsync(string publicKeyPem, CancellationToken ct = default)
+    {
+        var json = await GetStringAsync("/api/bidrag/version", 256 * 1024, ct);
+        return ReleaseVerifier.VerifyMac(json, publicKeyPem);
+    }
+
     private async Task<string> GetStringAsync(string path, int maxBytes, CancellationToken ct)
     {
         HttpResponseMessage resp;
