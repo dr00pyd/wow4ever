@@ -28,8 +28,7 @@ internal sealed class SettingsWindow : Window
     public SettingsWindow(Settings settings, bool pickDir)
     {
         _settings = settings;
-        Look.StyleWindow(this, T("set.title"), 640, 10);
-        SizeToContent = SizeToContent.Height;
+        Look.StyleWindow(this, T("set.title"), 640, null);
         CanResize = false;
 
         var flow = new StackPanel { Spacing = 8, Margin = new Thickness(24) };

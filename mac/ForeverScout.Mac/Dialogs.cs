@@ -12,8 +12,7 @@ internal static class Dialogs
 {
     private static Window Make(string title, Control body, double width = 440)
     {
-        var w = Look.StyleWindow(new Window(), title, width, 10);
-        w.SizeToContent = SizeToContent.Height;
+        var w = Look.StyleWindow(new Window(), title, width, null);
         w.CanResize = false;
         w.Content = new Border { Padding = new Thickness(24), Child = body };
         return w;

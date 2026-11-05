@@ -15,9 +15,9 @@
     <AssemblyName>ForeverScout</AssemblyName>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
 
-    <Version>1.0.7</Version>
-    <FileVersion>1.0.7.0</FileVersion>
-    <AssemblyVersion>1.0.7.0</AssemblyVersion>
+    <Version>1.0.8</Version>
+    <FileVersion>1.0.8.0</FileVersion>
+    <AssemblyVersion>1.0.8.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>

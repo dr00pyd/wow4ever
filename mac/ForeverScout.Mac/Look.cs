@@ -117,11 +117,14 @@ internal static class Look
         VerticalAlignment = VerticalAlignment.Center,
     };
 
-    public static Window StyleWindow(Window w, string title, double width, double height)
+    /// <summary>height null: höjden följer innehållet. En satt Height vinner över SizeToContent i Avalonia,
+    /// så dialogen blev bara en namnlist (1.0.7 hade Height=10).</summary>
+    public static Window StyleWindow(Window w, string title, double width, double? height)
     {
         w.Title = title;
         w.Width = width;
-        w.Height = height;
+        if (height is { } h) w.Height = h;
+        else { w.Height = double.NaN; w.SizeToContent = SizeToContent.Height; }
         w.Background = B(Bg);
         w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
         if (Res.Has("app-256.png")) w.Icon = Res.Icon("app-256.png");
