@@ -3,7 +3,7 @@
 ForeverScout samlar in data om WoW: Forever-världen medan du spelar: var NPC:er står, vad tränare lär ut, vad försäljare säljer, quests, malmådror och örter, loot och flygpunkter. Datan laddas upp till [guide.wow4ever.se](https://guide.wow4ever.se/bidra) och visas i Forever-guiden. När minst två spelare har rapporterat samma sak räknas den som bekräftad.
 
 - Spel: WoW: Forever (klient 1.60.x, `## Interface: 16001`)
-- Version: 1.0.2
+- Version: 1.0.3
 - Filformat: `docs/briefs/SCOUT-KONTRAKT.md` §1 (`ForeverScoutDB`, `v = 1`)
 
 ## Installation
@@ -44,7 +44,7 @@ Positioner sparas som kart-id (UiMapID) plus x/y i procent och tas när ett fön
 | Försäljare | föremål-id, pris, antal per köp, begränsat lager och alternativ valuta (föremål eller currency + antal) |
 | Quests | quest-id, titel, nivå, givare och avslutare (NPC- eller objekt-id), position vid givaren, mål och belöningar (föremål, valbara föremål, pengar, XP) |
 | Objekt | gameobject-id, namn (t.ex. "Copper Vein") och upp till 50 positioner |
-| Loot | källa (NPC, objekt eller föremål) med id, föremål med antal, och pengar. Varje källa räknas en gång per session. Fiske sparas inte. Högst 2 000 poster, och de äldsta tas bort först |
+| Loot | källa (`src`) med id, föremål med antal, och pengar. Högst 2 000 poster, och de äldsta tas bort först. Källorna:<br>`npc`, `object` och `item` är vanlig loot från en varelse, ett objekt eller en behållare.<br>`skin`, `mine` och `herb` är flåning, gruvdrift och örtplockning av en *varelse* (id = varelsens id). Malmådror och örter är objekt och förblir `object`.<br>`fish` är fiske (id = kartans uiMapID, plus position `m`/`x`/`y`).<br>Varje (källa, typ) räknas en gång per session, så vanlig loot och flåning av samma kropp blir två poster utan att den ena blockerar den andra |
 | Flygpunkter | nod-id, namn och position (den flygpunkt du står vid) |
 | Huvud | formatversion, addonversion, spelets build, spelets språk, ett slumpat installations-id och `seq` (en räknare som ökar för varje ny post, så att klienten vet vad som redan är uppladdat) |
 
@@ -65,6 +65,8 @@ Kontonamnet syns i sökvägen till filen (`WTF\Account\<KONTO>\`). Klienten skic
 - **API:** Forever bygger på Mainline-klienten (spelvarianten "Camelot") och har Midnights regler för *secret values*. Varje värde från spelet kontrolleras med `issecretvalue()` innan det jämförs eller sparas, och varje API-anrop sker i `pcall` med funktionsdetektering.
 - **Prestanda:** addonen använder ingen `OnUpdate`. Arbete görs bara när du interagerar med något, och omläsningar av försäljare och tränare väntar en kort stund (C_Timer) så att de inte körs för ofta. Samma position sparas inte igen inom en timme (0,5 kart-% tolerans), och listor som inte har ändrats ger ingen ny `seq`.
 - **Tränartjänsternas spell-id** läses via `C_TooltipInfo.GetTrainerService`. Om det saknas används `GetTrainerServiceItemLink`.
+- **Flåning och annan insamling** (från 1.0.3) känns igen på en lyckad Skinning/Mining/Herbalism-besvärjelse (alla id:n i Forevers spelfiler, och namnet som reserv) högst 3 sekunder före lootfönstret. Den gäller bara det lootfönstret. Fiske känns igen med `IsFishingLoot()`.
+- **Questmål utan föremålsnamn** (t.ex. "0/8 ", eftersom namnet inte hunnit laddas) läses om vid `QUEST_LOG_UPDATE` och `ITEM_DATA_LOAD_RESULT`, högst en gång per sekund och högst 20 gånger. När namnet kommer uppdateras posten och får ny `seq`, så att den laddas upp igen. En läsbar text ersätts aldrig av en ofullständig.
 - **Objektnamn** tas från målet för den senaste besvärjelse du kastade (t.ex. Mining på "Copper Vein") inom 15 sekunder före lootfönstret. Saknas ett sådant namn sparas bara id:t.
 - **Quests:** `minLvl` finns inte i Mainline-API:t och lämnas tomt. Nivån läses ur questloggen när du accepterar questen.
 - **Vapen- och ridtränare** känns bara igen på den engelska undertiteln. Annars blir de `class`.

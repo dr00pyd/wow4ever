@@ -2,8 +2,8 @@
 
 Skrivbordsklienten till [Forever-guiden](https://guide.wow4ever.se). Den installerar addonen **ForeverScout**, bevakar
 addonens SavedVariables-fil och laddar upp den (plus hotfix-cachen `DBCache.bin`) **varje gång spelet har sparat
-filen**: vid `/reload`, karaktärsbyte, utloggning och avslut. I spelet sparar `/scout sync` direkt. Klienten motsvarar
-Wowhead Client, men visar vad ditt bidrag ledde till. Kontrakt: `docs/briefs/SCOUT-KONTRAKT.md` (§2 API, §4 klient).
+filen**: vid `/reload`, karaktärsbyte, utloggning och avslut. I spelet sparar `/scout sync` direkt. Den visar också vad
+ditt bidrag ledde till. Kontrakt: `docs/briefs/SCOUT-KONTRAKT.md` (§2 API, §4 klient).
 
 Klienten ska bli öppen källkod (planen är gratis kodsignering via SignPath Foundation). Därför finns inga hemligheter
 i koden. Nyckeln skapas av servern vid registrering och sparas bara lokalt.

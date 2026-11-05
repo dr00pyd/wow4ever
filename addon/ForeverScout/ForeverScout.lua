@@ -10,13 +10,15 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.2"
+local VERSION = "1.0.3"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
 local SPOT_RADIUS = 0.5       -- map-% : closer than this to a recent spot = same spot
 local SPOT_REPEAT = 3600      -- seconds before the same spot may be recorded again
 local NAME_WINDOW = 15        -- seconds a UNIT_SPELLCAST_SENT target name is trusted for an object
+local GATHER_WINDOW = 3       -- seconds a successful Skinning/Mining/Herb Gathering/Fishing cast marks the next loot
+local OBJ_RETRIES = 20        -- times a quest objective without an item name is re-read (throttled, see below)
 
 local floor, abs, type, tonumber, tostring, pairs, ipairs, select, pcall =
       math.floor, math.abs, type, tonumber, tostring, pairs, ipairs, select, pcall
@@ -25,7 +27,10 @@ local db                      -- = ForeverScoutDB once loaded
 local opt                     -- = ForeverScoutOpt (per character, never uploaded)
 local session = {
   errors = 0, lastError = nil,
-  looted = {},                -- source GUIDs looted this session (memory only, never saved)
+  looted = {},                -- "<source GUID>|<src>" looted this session (memory only, never saved)
+  gather = nil,               -- { kind = "skin"|"mine"|"herb"|"fish", at = GetTime(), cast = castGUID } from UNIT_SPELLCAST_SUCCEEDED
+  objPending = {},            -- questID -> retries left, for objectives that arrived without an item name
+  objQueued = false,
   lastKind = nil, lastName = nil, lastTime = nil,
   vendorId = nil, trainerId = nil,
   trainerScans = 0, trainerQuietUntil = 0,
@@ -540,6 +545,60 @@ local function questLogLevel(id)
   return nil, nil
 end
 
+-- An objective text without a name ("0/8 " – the item name has not loaded yet) is incomplete.
+local function objectiveIncomplete(t)
+  return t == nil or not t:find("%a") or t:match("^%s*:?%s*%d+%s*/%s*%d+%s*$") ~= nil
+end
+
+-- The quest's objective texts from the quest log: C_QuestLog.GetQuestObjectives, else the Classic leaderboard API.
+local function questObjectives(id)
+  local list = {}
+  local objs = C_QuestLog and try(C_QuestLog.GetQuestObjectives, id)
+  if type(objs) == "table" and #objs > 0 then
+    for _, o in ipairs(objs) do
+      local t = type(o) == "table" and (str(o.text) or "") or nil
+      if t then list[#list + 1] = t end
+    end
+    return list
+  end
+  local idx = num(try(GetQuestLogIndexByID, id))
+  if idx and idx > 0 then
+    for i = 1, (num(try(GetNumQuestLeaderBoards, idx)) or 0) do
+      list[#list + 1] = str((try(GetQuestLogLeaderBoard, i, idx))) or ""
+    end
+  end
+  return list
+end
+
+-- Re-reads the objectives; returns true when every objective has its name. Bumps seq only if something changed.
+local function refreshObjectives(id)
+  local list = questObjectives(id)
+  if #list == 0 then return false end
+  local complete = true
+  for _, t in ipairs(list) do if objectiveIncomplete(t) then complete = false end end
+  local rec = db.quests[id]
+  local old = rec and rec.objectives and table.concat(rec.objectives, "|") or nil
+  -- Never replace complete texts with incomplete ones.
+  local oldComplete = rec and rec.objectives ~= nil
+  if oldComplete then for _, t in ipairs(rec.objectives) do if objectiveIncomplete(t) then oldComplete = false end end end
+  if table.concat(list, "|") ~= old and (complete or not oldComplete) then
+    questUpdate(id, function(r) r.objectives = list end)
+  end
+  return complete
+end
+
+-- Throttled retry for objectives that are still missing names (QUEST_LOG_UPDATE / ITEM_DATA_LOAD_RESULT), never OnUpdate.
+local function queueObjectiveRefresh()
+  if session.objQueued or next(session.objPending) == nil then return end
+  session.objQueued = true
+  after(1, function()
+    session.objQueued = false
+    for id, left in pairs(session.objPending) do
+      if refreshObjectives(id) or left <= 1 then session.objPending[id] = nil else session.objPending[id] = left - 1 end
+    end
+  end)
+end
+
 local function onQuestAccepted(a, b)
   local id = num(b) or num(a)
   if not id or id <= 0 then return end
@@ -547,16 +606,8 @@ local function onQuestAccepted(a, b)
     local lvl, title = questLogLevel(id)
     if lvl then rec.lvl = lvl end
     rec.title = title or rec.title
-    local objs = C_QuestLog and try(C_QuestLog.GetQuestObjectives, id)
-    if type(objs) == "table" and #objs > 0 then
-      local list = {}
-      for _, o in ipairs(objs) do
-        local t = type(o) == "table" and str(o.text)
-        if t then list[#list + 1] = t end
-      end
-      if #list > 0 then rec.objectives = list end
-    end
   end)
+  if not refreshObjectives(id) then session.objPending[id] = OBJ_RETRIES end
 end
 
 local function onQuestEnd(withRewards)
@@ -583,16 +634,104 @@ local function onSpellcastSent(unit, target)
   end
 end
 
+-- Gathering spells: every spell id with these names in the Forever 1.60 client data (wago.tools SpellName, product
+-- wowf), including Forever's own new ids (1235xxx/1240xxx/…). The localized name of the first id and the English
+-- names are a fallback, so a later new rank/id still matches.
+local GATHER_SPELLS = {
+  skin = { ids = { 8613, 8617, 8618, 10768, 13697, 1240952, 1240963, 1240974, 1240987, 1248530, 1300763, 1300766 },
+           en = { "Skinning" } },
+  mine = { ids = { 2575, 2576, 2577, 2578, 2579, 3564, 10248, 12560, 13611, 1235230, 1240951, 1240962, 1240973, 1240986, 1264639, 1272073 },
+           en = { "Mining" } },
+  herb = { ids = { 2366, 2368, 2369, 2371, 3570, 9134, 11993, 13614, 1235236, 1240949, 1240960, 1240971, 1240984 },
+           en = { "Herbalism", "Herb Gathering" } },
+  fish = { ids = { 7620, 7731, 7732, 13615, 18248, 24303, 1229271, 1240948, 1240959, 1240970, 1240983 },
+           en = { "Fishing" } },
+}
+
+local function spellName(id)
+  if not id then return nil end
+  if C_Spell and C_Spell.GetSpellName then
+    local n = str(try(C_Spell.GetSpellName, id))
+    if n then return n end
+  end
+  return str((try(GetSpellInfo, id)))
+end
+
+local gatherById, gatherByName
+local function gatherKind(spellId)
+  if not gatherById then
+    gatherById, gatherByName = {}, {}
+    for kind, def in pairs(GATHER_SPELLS) do
+      for _, id in ipairs(def.ids) do gatherById[id] = kind end
+      for _, en in ipairs(def.en) do gatherByName[en] = kind end
+      local loc = spellName(def.ids[1])
+      if loc then gatherByName[loc] = kind end
+    end
+  end
+  local id = num(spellId)
+  if id and gatherById[id] then return gatherById[id] end
+  local n = spellName(id)
+  return n and gatherByName[n] or nil
+end
+
+-- UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID): remember a finished gathering cast for the next LOOT_OPENED.
+local function onSpellcastSucceeded(unit, castGuid, spellId)
+  if unit ~= "player" then return end
+  local kind = gatherKind(spellId)
+  if kind then session.gather = { kind = kind, at = num(try(GetTime)) or 0, cast = str(castGuid) } end
+  -- The latest fishing cast identifies the catch (reopening the same loot window must not log it twice).
+  if kind == "fish" then session.fishCast = str(castGuid) or tostring(num(try(GetTime)) or 0) end
+end
+
+local function recentGather()
+  local g = session.gather
+  if g and (num(try(GetTime)) or 0) - g.at <= GATHER_WINDOW then return g end
+  return nil
+end
+
 local function pushLoot(entry)
   local loot = db.loot
   loot[#loot + 1] = entry
   while #loot > MAX_LOOT do table.remove(loot, 1) end
 end
 
+-- Fishing: one entry per catch (src = "fish", id = uiMapID where it was caught, plus the position), deduped per
+-- fishing cast. Counts come from GetLootSourceInfo like other loot, else GetLootSlotInfo's quantity.
+local function lootFishing(n, moneyType)
+  local key = "fish|" .. (session.fishCast or tostring(floor(num(try(GetTime)) or 0)))
+  session.gather = nil
+  if session.looted[key] then return end
+  local items, money = {}, 0
+  for slot = 1, n do
+    local slotType = num(try(GetLootSlotType, slot))
+    local srcInfo = { try(GetLootSourceInfo, slot) }
+    local c = 0
+    for k = 2, #srcInfo, 2 do c = c + (num(srcInfo[k]) or 0) end
+    if c == 0 then local _, _, qty = try(GetLootSlotInfo, slot); c = num(qty) or 0 end
+    if slotType == moneyType then
+      money = money + c
+    else
+      local itemId = itemIdFromLink(try(GetLootSlotLink, slot))
+      if itemId then items[#items + 1] = { id = itemId, c = c > 0 and c or 1 } end
+    end
+  end
+  if #items == 0 and money <= 0 then return end
+  session.looted[key] = true
+  local m, x, y = playerPos()
+  pushLoot({ q = nextSeq(), t = now(), src = "fish", id = m or 0, m = m, x = x, y = y, items = items, money = money > 0 and money or nil })
+  touch("loot", "fishing")
+end
+
 local function onLootOpened()
-  if clean(try(IsFishingLoot)) then return end
   local n = num(try(GetNumLootItems)) or 0
   if n <= 0 then return end
+  local moneyType0 = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or 2
+  if clean(try(IsFishingLoot)) then return lootFishing(n, moneyType0) end
+  -- A finished Skinning/Mining/Herb Gathering cast just before this loot window: loot from a creature is
+  -- that gathering ("skin"/"mine"/"herb"), not its ordinary drop. The cast belongs to this loot window only.
+  local g = recentGather()
+  session.gather = nil
+  local gatherSrc = g and g.kind ~= "fish" and g.kind or nil
   local moneyType = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or 2
   local sources, order = {}, {}
   for slot = 1, n do
@@ -614,13 +753,17 @@ local function onLootOpened()
     end
   end
   local t = num(try(GetTime)) or 0
-  for _, g in ipairs(order) do
-    if not session.looted[g] then
-      session.looted[g] = true
-      local kind, id = parseGuid(g)
-      local s = sources[g]
+  for _, sg in ipairs(order) do
+    local kind, id = parseGuid(sg)
+    local src = kind
+    if kind == "npc" and gatherSrc then src = gatherSrc end
+    -- Dedup per (GUID, src): ordinary loot and skinning of the same corpse are two entries; neither blocks the other.
+    local key = sg .. "|" .. tostring(src)
+    if not session.looted[key] then
+      session.looted[key] = true
+      local s = sources[sg]
       if kind and (#s.items > 0 or s.money > 0) then
-        pushLoot({ q = nextSeq(), t = now(), src = kind, id = id, items = s.items, money = s.money > 0 and s.money or nil })
+        pushLoot({ q = nextSeq(), t = now(), src = src, id = id, items = s.items, money = s.money > 0 and s.money or nil })
         touch("loot", tostring(id))
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
@@ -820,6 +963,7 @@ local function onSlash(msg)
       for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights" }) do db[k] = {} end
       db.char = nil
       session.looted = {}
+      session.objPending = {}
       session.resetArmed = false
       say(L.reset_done)       -- seq and install are kept so the uploader never re-sends old posts
     else
@@ -853,11 +997,14 @@ local handlers = {
   QUEST_GREETING = function() noteUnit("npc", { quest = true }) end,
   QUEST_DETAIL = onQuestDetail,
   QUEST_ACCEPTED = onQuestAccepted,
+  QUEST_LOG_UPDATE = queueObjectiveRefresh,
+  ITEM_DATA_LOAD_RESULT = queueObjectiveRefresh,
   QUEST_PROGRESS = function() onQuestEnd(false) end,
   QUEST_COMPLETE = function() onQuestEnd(true) end,
   TAXIMAP_OPENED = onTaxiMapOpened,
   BANKFRAME_OPENED = function() noteUnit("npc", nil) end,
   UNIT_SPELLCAST_SENT = onSpellcastSent,
+  UNIT_SPELLCAST_SUCCEEDED = onSpellcastSucceeded,
   LOOT_OPENED = onLootOpened,
   TRADE_SKILL_SHOW = queueRecipeScan,
   TRADE_SKILL_LIST_UPDATE = queueRecipeScan,
