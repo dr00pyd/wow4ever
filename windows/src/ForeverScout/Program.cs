@@ -45,6 +45,8 @@ internal static class Program
         }
         using var _instance = instance;
 
+        // Retry-försök under självuppdateringen loggas (steg, försök, typ, HResult – aldrig sökvägar).
+        IoRetry.OnRetry = (step, attempt, ex) => UploadLog.Append("update", 0, "-", $"retry step={step} attempt={attempt} {ex.GetType().Name} 0x{ex.HResult:X8}");
         SelfUpdater.CleanupOld();
         using var api = new ApiClient { Key = KeyStore.Load() };
 

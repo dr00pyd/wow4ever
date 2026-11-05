@@ -108,6 +108,11 @@ public static class Strings
         ["update.ready"] = ("Version {0} är nedladdad, signaturen är kontrollerad. Starta om nu?", "Version {0} is downloaded and its signature verified. Restart now?"),
         ["update.addon"] = ("Addonen uppdaterades till {0}.", "The addon was updated to {0}."),
         ["update.fail"] = ("Uppdateringen misslyckades: {0}", "Update failed: {0}"),
+        ["update.inuse"] = ("Kunde inte ersätta ForeverScout.exe (filen används av ett annat program, t.ex. antivirus). Försök igen om en stund.", "Could not replace ForeverScout.exe (the file is in use by another program, e.g. antivirus). Please try again in a moment."),
+        ["update.download"] = ("Den nya versionen kunde inte hämtas: {0}", "The new version could not be downloaded: {0}"),
+        ["update.restart"] = ("Den nya versionen är på plats men kunde inte startas. Starta Forever Scout igen.", "The new version is in place but could not be started. Please start Forever Scout again."),
+        ["update.openpage"] = ("Självuppdateringen har misslyckats flera gånger. Vill du öppna nedladdningssidan och hämta den nya versionen där?", "Self-update has failed several times. Do you want to open the download page and get the new version there?"),
+        ["journal.updatefail"] = ("{0}: uppdateringen misslyckades ({1})", "{0}: update failed ({1})"),
         // Första start
         ["first.title"] = ("Välkommen till Forever Scout", "Welcome to Forever Scout"),
         ["first.intro"] = ("Scout samlar in NPC:er, quests, tränare och loot medan du spelar och skickar dem till Forever-guiden när du avslutar spelet. Inget konto- eller karaktärsnamn skickas.", "Scout collects NPCs, quests, trainers and loot while you play and sends them to the Forever guide when you quit the game. No account or character names are sent."),
@@ -231,6 +236,7 @@ public static class Strings
         ["err.file-too-large"] = ("Filen är för stor.", "The file is too large."),
         ["err.io"] = ("Kunde inte läsa eller skriva en fil.", "Could not read or write a file."),
         ["err.exe-path"] = ("Hittar inte programfilen.", "Cannot find the program file."),
+        ["err.update-failed"] = ("Uppdateringen misslyckades ({0}).", "The update failed ({0})."),
         ["err.access-denied"] = ("Åtkomst utanför WoW-katalogen nekades (skydd).", "Access outside the WoW folder was refused (safeguard)."),
         ["err.not-our-file"] = ("Filen innehåller annat än ForeverScoutDB och skickas inte.", "The file contains more than ForeverScoutDB and is not sent."),
 

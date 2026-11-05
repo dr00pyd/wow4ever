@@ -372,13 +372,43 @@ internal sealed class ScoutApp : ApplicationContext
                 MessageBox.Show(_form, F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            var exe = await Api.DownloadReleaseFileAsync(release, kind, UpdateKeys.PublicKeyPem, 400L * 1024 * 1024);
-            SelfUpdater.Stage(exe);
+            byte[] exe;
+            try { exe = await Api.DownloadReleaseFileAsync(release, kind, UpdateKeys.PublicKeyPem, 400L * 1024 * 1024); }
+            catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { throw new UpdateStepException(UpdateSteps.Download, ex, null); }
+            // Stage och Swap gör blockerande omförsök (upp till ~15 s per steg) – kör dem utanför UI-tråden.
+            await Task.Run(() => SelfUpdater.Stage(exe));
             if (MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
-                SelfUpdater.Swap();
-                Restart();
+                await Task.Run(() => SelfUpdater.Swap());
+                UploadLog.Append("update", exe.Length, ApiClient.Sha256Hex(exe), $"ok swapped to {newVersion}");
+                Settings.UpdateFailures = 0;
+                Settings.Save();
+                if (!StartNewInstance())
+                    throw new UpdateStepException(UpdateSteps.Restart, new InvalidOperationException("start failed"), Path.GetFileName(SelfUpdater.CurrentExe));
+                Exit();
             }
+        }
+        catch (UpdateStepException ux)
+        {
+            // Diagnostik: steg, typ, HResult och bara filnamnet – till uploads.log och lägerjournalen.
+            UploadLog.Append("update", 0, "-", "fail " + ux.Diagnostic);
+            Log(F("journal.updatefail", When(DateTime.UtcNow), ux.Diagnostic), Theme.Err);
+            Settings.UpdateFailures++;
+            Settings.Save();
+            if (!interactive) return;
+            var msg = ux.Step switch
+            {
+                UpdateSteps.Download => F("update.download", Error(ux.InnerException!)),
+                UpdateSteps.Restart => S("update.restart"),
+                _ when ux.FileInUse => S("update.inuse"),
+                _ => F("update.fail", ux.Diagnostic),
+            };
+            if (Settings.UpdateFailures >= 2)
+            {
+                if (MessageBox.Show(_form, msg + "\n\n" + S("update.openpage"), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                    Links.Open(Api, Links.Download(Api));
+            }
+            else MessageBox.Show(_form, msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException)
         {
@@ -480,9 +510,22 @@ internal sealed class ScoutApp : ApplicationContext
 
     public void Restart()
     {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, Arguments = "--restarted" }); }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+        StartNewInstance();
         Exit();
+    }
+
+    /// <summary>
+    /// Startar exe:n på samma sökväg (efter Swap är det den nya filen) med --restarted: den nya instansen väntar då
+    /// upp till 10 s på mutexen tills den här processen avslutats (Exit → Application.Run returnerar → mutexen släpps).
+    /// </summary>
+    private static bool StartNewInstance()
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(SelfUpdater.CurrentExe) { UseShellExecute = false, Arguments = "--restarted" });
+            return p != null;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or ScoutException) { return false; }
     }
 
     public bool IsExiting => _exiting;

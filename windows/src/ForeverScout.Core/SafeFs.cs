@@ -216,12 +216,38 @@ public static class SafeFs
 
     private static string OwnExe => Normalize(OwnExeOverride ?? Environment.ProcessPath ?? throw new SafeFsException("no-exe", ""));
 
-    /// <summary>Filerna självuppdateringen får röra: exe, .new.exe (+ dess .tmp under skrivning) och .old.exe.</summary>
+    /// <summary>
+    /// Filerna självuppdateringen får röra: exe, .new.exe (+ dess .tmp under skrivning), .old.exe och
+    /// .old-&lt;14 siffror&gt;.exe (tidsstämpel när .old.exe är låst). Inga andra filer i exe:ns mapp.
+    /// </summary>
     private static bool IsOwnExeFile(string full)
     {
         var exe = OwnExe;
         var stem = exe[..^4];
-        return Eq(full, exe) || Eq(full, stem + ".new.exe") || Eq(full, stem + ".new.exe.tmp") || Eq(full, stem + ".old.exe");
+        if (Eq(full, exe) || Eq(full, stem + ".new.exe") || Eq(full, stem + ".new.exe.tmp") || Eq(full, stem + ".old.exe")) return true;
+        if (full.Length != stem.Length + ".old-".Length + 14 + ".exe".Length) return false;
+        if (!full.StartsWith(stem + ".old-", StringComparison.OrdinalIgnoreCase) || !full.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return false;
+        var ts = full.Substring(stem.Length + 5, 14);
+        return ts.All(char.IsAsciiDigit);
+    }
+
+    /// <summary>Självuppdateringens filer som finns bredvid exe:n (.new.exe, .new.exe.tmp, .old.exe, .old-*.exe).</summary>
+    public static List<string> OwnExeLeftovers()
+    {
+        var exe = OwnExe;
+        var dir = Path.GetDirectoryName(exe)!;
+        var stemName = Path.GetFileNameWithoutExtension(exe);
+        var list = new List<string>();
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir, stemName + ".*"))
+            {
+                var full = Normalize(f);
+                if (!Eq(full, exe) && IsOwnExeFile(full)) list.Add(full);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return list;
     }
 
     /// <summary>Kontrollerar en sökväg mot reglerna och returnerar den normaliserade sökvägen.</summary>
@@ -324,13 +350,17 @@ public static class SafeFs
     public static string ReadAllText(string path) => System.Text.Encoding.UTF8.GetString(ReadAllBytes(path)).TrimStart((char)0xFEFF);
 
     /// <summary>Skriver atomärt (temporärfil + namnbyte).</summary>
-    public static void WriteAllBytes(string path, byte[] data)
+    public static void WriteAllBytes(string path, byte[] data) => WriteAllBytes(path, data, null);
+
+    /// <summary>Som ovan; <paramref name="retry"/> (t.ex. IoRetry) omsluter namnbytet, som antivirus kan blockera kort.</summary>
+    public static void WriteAllBytes(string path, byte[] data, Action<Action>? retry)
     {
         var p = Check(path, Access.Write, isDir: false);
         var tmp = p + ".tmp";
         Check(tmp, Access.Write, isDir: false);
         File.WriteAllBytes(tmp, data);
-        File.Move(tmp, p, overwrite: true);
+        void Move() => File.Move(tmp, p, overwrite: true);
+        if (retry is null) Move(); else retry(Move);
     }
 
     public static void WriteAllText(string path, string text) => WriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(text));

@@ -136,6 +136,7 @@ internal static class Links
     public static string Terms(ApiClient api) => api.Site(Strings.IsSv ? "/bidra/villkor" : "/en/contribute/terms").ToString();
     public static string Privacy(ApiClient api) => api.Site(Strings.IsSv ? "/bidra/integritet" : "/en/contribute/privacy").ToString();
     public static string Report(ApiClient api) => Contribute(api) + "#rapportera-fel";
+    public static string Download(ApiClient api) => api.Site(Strings.IsSv ? "/bidra/ladda-ner" : "/en/contribute/download").ToString();
 
     /// <summary>Öppnar bara http(s)-länkar mot sajtens värd.</summary>
     public static void Open(ApiClient api, string url)

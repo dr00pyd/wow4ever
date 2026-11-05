@@ -36,6 +36,7 @@ public static class ErrorCodes
     public const string ExePath = "exe-path";
     public const string AccessDenied = "access-denied";
     public const string NotOurFile = "not-our-file";
+    public const string UpdateFailed = "update-failed";
 
     /// <summary>Alla koder (används av testet som kräver sv- och en-text för varje).</summary>
     public static IEnumerable<string> All =>

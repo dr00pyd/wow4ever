@@ -184,6 +184,18 @@ Klienten installerar en ny exe eller addon-zip **bara** om den är signerad med 
      lite-exe:n kan inte smita in.
 4. En ny exe sparas som `ForeverScout.new.exe`. Vid omstart döps den körande filen om till `.old.exe` och den nya
    flyttas in. Det fungerar också i installationsmappen, eftersom den ligger per användare.
+   Från 1.0.5 tål självuppdateringen att filer är tillfälligt låsta:
+   - **Låsta filer:** Defender och SmartScreen skannar ofta en nyss skriven 108 MB-exe. Därför görs varje flytt och
+     radering om upp till 10 gånger under ungefär 15 s (`IoRetry`), och varje omförsök loggas.
+   - **Rester:** gamla `.new.exe` och `.new.exe.tmp` från avbrutna försök tas bort först.
+   - **Låst `.old.exe`:** om en gammal process fortfarande kör från den används `.old-<tidsstämpel>.exe`, och
+     `CleanupOld` städar alla `.old*.exe`. SafeFs tillåter exakt det mönstret för exe:ns eget namn och inget annat.
+   - **Rollback:** misslyckas det andra namnbytet flyttas den gamla exe:n tillbaka.
+   - **Diagnostik:** vid fel skrivs steget, undantagstypen, HResult och bara filnamnet till `uploads.log` och
+     lägerjournalen. Stegen är `download`, `stage`, `swap-delete`, `swap-move1`, `swap-move2` och `restart`.
+     Dialogen förklarar felet i klartext, och efter två misslyckanden erbjuder den nedladdningssidan.
+   - **Omstart:** den nya exe:n startas med `--restarted` och väntar på mutexen tills den gamla processen har
+     avslutats.
 
 ## Publicera (två varianter av samma kod)
 ```powershell
