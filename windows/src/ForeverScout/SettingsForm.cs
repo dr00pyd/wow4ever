@@ -128,6 +128,7 @@ internal sealed class SettingsForm : Form
         var dir = _dir.Text.Trim();
         if (dir.Length > 0 && !WowLocator.IsUsableGameDir(dir)) { _error.Text = S("pick.invalid"); return; }
         _settings.GameDir = dir.Length > 0 ? SafeFs.Normalize(dir) : null;
+        _settings.ConfirmGameDir(); // användaren har sett och sparat katalogen här (L11)
         _settings.Language = _lang.SelectedIndex switch { 1 => "sv", 2 => "en", _ => "auto" };
         _settings.AutoUpload = _autoupload.Checked;
         _settings.UploadHotfix = _hotfix.Checked;

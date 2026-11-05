@@ -140,12 +140,13 @@ internal sealed class ScoutController : IDisposable
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { }
     }
 
+    /// <summary>Godkänner spelkatalogen i SafeFs – bara en som användaren valt eller bekräftat (L11).</summary>
     public void ApplyGameDir()
     {
         _gameRoot = null;
         try
         {
-            if (!string.IsNullOrEmpty(Settings.GameDir) && WowLocator.IsUsableGameDir(Settings.GameDir))
+            if (!string.IsNullOrEmpty(Settings.GameDir) && Settings.IsGameDirConfirmed() && WowLocator.IsUsableGameDir(Settings.GameDir))
                 _gameRoot = SafeFs.SetGameDir(Settings.GameDir);
             else SafeFs.SetGameDir(null);
         }
@@ -155,15 +156,28 @@ internal sealed class ScoutController : IDisposable
 
     private async Task EnsureGameDir()
     {
-        if (!string.IsNullOrEmpty(Settings.GameDir) && WowLocator.IsUsableGameDir(Settings.GameDir)) return;
-        var best = WowLocator.Locate().Where(d => WowLocator.Rank(d) == 0).ToList();
-        if (best.Count == 1)
+        var (step, dir) = WowLocator.NextStep(Settings, WowLocator.IsUsableGameDir, () => WowLocator.Locate());
+        if (step == WowLocator.StartStep.Confirm) await ConfirmFoundGameDir(dir!);
+        else if (step == WowLocator.StartStep.Pick) await OpenSettings(pickDir: true);
+    }
+
+    /// <summary>
+    /// L11: en automatiskt hittad (eller av ≤ 1.0.6 sparad) katalog används först när användaren sagt ja – en gång.
+    /// Nej: katalogen föreslås inte igen och användaren får välja själv.
+    /// </summary>
+    private async Task ConfirmFoundGameDir(string dir)
+    {
+        if (await Dialogs.YesNo(_window, TF("gamedir.confirm", dir)))
         {
-            Settings.GameDir = best[0].Path;
+            Settings.GameDir = dir;
+            Settings.ConfirmGameDir();
             Settings.Save();
             return;
         }
-        if (string.IsNullOrEmpty(Settings.GameDir)) await OpenSettings(pickDir: true);
+        Settings.GameDirDeclined = dir;
+        Settings.GameDir = null;
+        Settings.Save();
+        await OpenSettings(pickDir: true);
     }
 
     private void InstallBundledAddonIfNeeded()
@@ -326,7 +340,7 @@ internal sealed class ScoutController : IDisposable
             var what = report.NewConfirmed.Count == 1 ? first : TF("toast.more", first, report.NewConfirmed.Count - 1);
             Log(T("toast.title") + " " + TF("toast.body", what), Look.Ok);
         }
-        if (report.AddonBlocked) await UpdateAddon(force: true, interactive: false, announceBlocked: true);
+        if (report.AddonBlocked) await UpdateAddonAfterBlock();
 
         RefreshStats(force: true);
         _window?.ShowContribution();
@@ -344,15 +358,16 @@ internal sealed class ScoutController : IDisposable
     {
         try
         {
-            var release = await Api.VersionAsync(UpdateKeys.PublicKeyPem);
+            // L10: signature2 krävs (ReleaseVerifier) och "issued" får inte vara äldre än den senaste vi sett.
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
             Settings.BlockedAddons = release.BlockedAddons.ToList();
             Settings.Save();
-            await UpdateAddon(release, force: false, interactive, announceBlocked: false);
+            await UpdateAddon(release, interactive, announceBlocked: false, alsoBlocked: null);
             _sync.Notify();
             if (!interactive) return;
 
             SignedRelease mac;
-            try { mac = await Api.MacVersionAsync(UpdateKeys.PublicKeyPem); }
+            try { mac = Settings.AcceptRelease(await Api.MacVersionAsync(UpdateKeys.PublicKeyPem)); }
             catch (ApiException ex) when (ex.Code == ErrorCodes.SignatureMissing) { mac = new SignedRelease(); } // inget Mac-släpp än
             var newVersion = mac.Mac;
             if (mac.MacFile is null || !SelfUpdater.IsNewer(newVersion))
@@ -406,27 +421,43 @@ internal sealed class ScoutController : IDisposable
         }
     }
 
-    private async Task UpdateAddon(bool force, bool interactive, bool announceBlocked)
+    /// <summary>
+    /// Efter att uppladdningen stoppats för en spärrad addon (spärrlistan eller serverns 422): installera en NYARE
+    /// signerad addon om det finns en, annars står uppladdningen still och användaren får veta det (L10).
+    /// </summary>
+    private async Task UpdateAddonAfterBlock()
     {
         try
         {
-            var release = await Api.VersionAsync(UpdateKeys.PublicKeyPem);
-            Settings.BlockedAddons = release.BlockedAddons.ToList();
+            // Spärrar som uppladdningen just lärt sig (422) gäller tills nästa versionskontroll.
+            var learned = Settings.BlockedAddons.ToList();
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
+            Settings.BlockedAddons = release.BlockedAddons.Union(learned).ToList();
             Settings.Save();
-            await UpdateAddon(release, force, interactive, announceBlocked);
+            await UpdateAddon(release, interactive: false, announceBlocked: true, alsoBlocked: learned);
         }
         catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetError(Strings.Error(ex)); }
     }
 
-    private async Task UpdateAddon(SignedRelease release, bool force, bool interactive, bool announceBlocked)
+    /// <summary>
+    /// Installerar den signerade addonen om ingen finns eller om den signerade är NYARE (<see cref="AddonInstaller.Decide"/>).
+    /// L10: en spärrad addon leder aldrig till en äldre addon – bara till att uppladdningen står still och ett meddelande.
+    /// </summary>
+    private async Task UpdateAddon(SignedRelease release, bool interactive, bool announceBlocked, IEnumerable<string>? alsoBlocked)
     {
-        if (CurrentDir is not { } dir || release.AddonFile is null) return;
+        if (CurrentDir is not { } dir) return;
         var installed = AddonInstaller.InstalledVersion(dir);
-        bool blocked = installed != null && release.IsAddonBlocked(installed);
-        bool newer = AddonInstaller.CompareVersions(release.Addon, installed) > 0;
-        bool differs = !string.Equals(release.Addon, installed, StringComparison.Ordinal);
-        if (!(installed is null || blocked || newer || (force && differs))) return;
-        if (release.IsAddonBlocked(release.Addon)) return;
+        switch (AddonInstaller.Decide(installed, release, alsoBlocked))
+        {
+            case AddonInstaller.UpdateAction.None:
+                return;
+            case AddonInstaller.UpdateAction.BlockedWaiting:
+                var wait = TF("addon.blocked.wait", installed);
+                if (ErrorText != wait) Log(TF("journal.error", Strings.When(DateTime.UtcNow), wait), Look.Warn);
+                SetError(wait);
+                if (interactive) await Dialogs.Info(_window, wait);
+                return;
+        }
         var zip = await Api.DownloadReleaseFileAsync(release, ReleaseKind.Addon, UpdateKeys.PublicKeyPem, 20 * 1024 * 1024);
         AddonInstaller.Install(dir, AddonInstaller.FromZip(zip));
         ErrorText = null;

@@ -6,7 +6,7 @@ local texts = {
   en = {
     title = "ForeverScout",
     status_head = "ForeverScout %s - %d posts saved (seq %d).",
-    status_counts = "NPCs %d, trainers %d, vendors %d, quests %d, objects %d, loot %d, flight points %d.",
+    status_counts = "NPCs %d, trainers %d, vendors %d, quests %d, objects %d, loot %d, flight points %d, mobs %d, mailboxes %d.",
     status_last = "Latest: %s \"%s\", %s ago.",
     status_none = "Nothing recorded yet - talk to NPCs, loot and fly as usual.",
     status_pos_off = "Positions are paused right now (instance, taxi or vehicle).",
@@ -30,13 +30,13 @@ local texts = {
     debug = "Errors this session: %d. Last: %s",
     unknown = "Unknown command. Type /scout help.",
     kind_npc = "NPC", kind_object = "object", kind_trainer = "trainer", kind_vendor = "vendor",
-    kind_quest = "quest", kind_loot = "loot", kind_flight = "flight point",
+    kind_quest = "quest", kind_loot = "loot", kind_flight = "flight point", kind_mob = "mob", kind_mail = "mailbox (map)",
     sec = "%d s", min = "%d min", hour = "%d h", day = "%d d",
   },
   sv = {
     title = "ForeverScout",
     status_head = "ForeverScout %s - %d poster sparade (seq %d).",
-    status_counts = "NPC:er %d, tränare %d, försäljare %d, quests %d, objekt %d, loot %d, flygpunkter %d.",
+    status_counts = "NPC:er %d, tränare %d, försäljare %d, quests %d, objekt %d, loot %d, flygpunkter %d, mobs %d, brevlådor %d.",
     status_last = "Senast: %s \"%s\", för %s sedan.",
     status_none = "Inget insamlat än - prata med NPC:er, loota och flyg som vanligt.",
     status_pos_off = "Positioner är pausade just nu (instans, flygtur eller fordon).",
@@ -60,7 +60,7 @@ local texts = {
     debug = "Fel denna session: %d. Senaste: %s",
     unknown = "Okänt kommando. Skriv /scout help.",
     kind_npc = "NPC", kind_object = "objekt", kind_trainer = "tränare", kind_vendor = "försäljare",
-    kind_quest = "quest", kind_loot = "loot", kind_flight = "flygpunkt",
+    kind_quest = "quest", kind_loot = "loot", kind_flight = "flygpunkt", kind_mob = "mob", kind_mail = "brevlåda (karta)",
     sec = "%d s", min = "%d min", hour = "%d h", day = "%d d",
   },
 }

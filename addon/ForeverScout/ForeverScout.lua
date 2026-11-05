@@ -7,10 +7,11 @@
 --    compared or stored. Secret = treated as missing.
 --  * No OnUpdate. Work happens only on interaction events; re-scans are debounced with C_Timer.
 --  * Never stored: character name, realm, account, full GUIDs (only the creature/object id, field 6).
+--    Nothing about other players: target/mouseover only records creatures that no player controls.
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.3"
+local VERSION = "1.0.4"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -19,6 +20,14 @@ local SPOT_REPEAT = 3600      -- seconds before the same spot may be recorded ag
 local NAME_WINDOW = 15        -- seconds a UNIT_SPELLCAST_SENT target name is trusted for an object
 local GATHER_WINDOW = 3       -- seconds a successful Skinning/Mining/Herb Gathering/Fishing cast marks the next loot
 local OBJ_RETRIES = 20        -- times a quest objective without an item name is re-read (throttled, see below)
+-- 1.0.4: mobs seen on target/mouseover (approximate area = the player's own position, never the mob's).
+local MAX_MOBS = 3000         -- mobs in the file; new mobs are ignored above this (existing ones still update)
+local MOB_AREAS = 8           -- approximate spots per mob; full = no more (keeps seq and the file stable)
+local MOB_RADIUS = 5          -- map-% : a sighting this close to a saved area (same map) is the same area
+local MOB_REPEAT = 120        -- seconds before the same GUID is looked at again (memory only, never saved)
+local MOB_GUIDS = 2000        -- remembered GUIDs before the memory is cleared
+local MAX_MAIL = 300          -- mailbox spots, oldest dropped
+local MAIL_RADIUS = 1         -- map-% : a mailbox this close to a saved one (same map) is the same mailbox
 
 local floor, abs, type, tonumber, tostring, pairs, ipairs, select, pcall =
       math.floor, math.abs, type, tonumber, tostring, pairs, ipairs, select, pcall
@@ -35,6 +44,8 @@ local session = {
   vendorId = nil, trainerId = nil,
   trainerScans = 0, trainerQuietUntil = 0,
   sentName = nil, sentAt = 0,
+  mobSeen = {}, mobSeenN = 0, -- GUID -> GetTime() of the last look (memory only, never saved)
+  mobCount = 0,
   recipes = nil,
   resetArmed = false,
 }
@@ -74,6 +85,18 @@ local function str(v)
   v = clean(v)
   if type(v) == "string" and v ~= "" then return v end
   return nil
+end
+
+-- true/false from a unit predicate; nil when the answer is unknown (secret value or failed call).
+local function unitFlag(fn, ...)
+  if type(fn) ~= "function" then return nil end
+  local ok, v = pcall(fn, ...)
+  if not ok then return nil end
+  if v ~= nil and issecretvalue then
+    local ok2, secret = pcall(issecretvalue, v)
+    if not ok2 or secret then return nil end
+  end
+  return v and true or false
 end
 
 local function round2(v)
@@ -625,15 +648,6 @@ end
 -- Loot and gathered objects
 ---------------------------------------------------------------------------
 
-local function onSpellcastSent(unit, target)
-  if unit ~= "player" then return end
-  local name = str(target)
-  if name then
-    session.sentName = name
-    session.sentAt = num(try(GetTime)) or 0
-  end
-end
-
 -- Gathering spells: every spell id with these names in the Forever 1.60 client data (wago.tools SpellName, product
 -- wowf), including Forever's own new ids (1235xxx/1240xxx/…). The localized name of the first id and the English
 -- names are a fallback, so a later new rank/id still matches.
@@ -672,6 +686,51 @@ local function gatherKind(spellId)
   if id and gatherById[id] then return gatherById[id] end
   local n = spellName(id)
   return n and gatherByName[n] or nil
+end
+
+-- Spells cast on a game object to open it: "Opening"/"Opening - No Text", Forever's "Gathering" and "Pick Lock"
+-- (Forever 1.60 client SpellName, wago.tools product wowf). Name fallback as for GATHER_SPELLS.
+local OPEN_SPELLS = { ids = { 3365, 3366, 6247, 6249, 6477, 6478, 6658, 6802, 8917, 21248, 21288, 21651, 22810, 24390, 24391,
+                              26868, 423088, 423632, 461679, 463320, 1221363, 1221732, 1234592, 1236393, 1269930, 1273960,
+                              1308379, 1309310, 1309978, 1310156, 1310491, 1804, 6461, 6463 },
+                      en = { "Opening", "Opening - No Text", "Gathering", "Pick Lock" } }
+local openById, openByName
+local function openSpell(spellId)
+  if not openById then
+    openById, openByName = {}, {}
+    for _, id in ipairs(OPEN_SPELLS.ids) do openById[id] = true end
+    for _, en in ipairs(OPEN_SPELLS.en) do openByName[en] = true end
+    local loc = spellName(OPEN_SPELLS.ids[1])
+    if loc then openByName[loc] = true end
+  end
+  local id = num(spellId)
+  if id and openById[id] then return true end
+  local n = spellName(id)
+  return n ~= nil and openByName[n] == true
+end
+
+-- Is this name a player's (ours, the target's, the mouseover's or a group member's)? Unknown counts as yes.
+local function playerName(name)
+  if name == str(try(UnitName, "player")) then return true end
+  for _, u in ipairs({ "target", "mouseover", "focus" }) do
+    if str(try(UnitName, u)) == name and unitFlag(UnitIsPlayer, u) ~= false then return true end
+  end
+  -- UnitIsPlayer also takes a group member's name; false/nil = not a known player.
+  return unitFlag(UnitIsPlayer, name) == true
+end
+
+-- UNIT_SPELLCAST_SENT(unit, target, castGUID, spellID). The target name is only kept for Opening and gathering
+-- casts (on an object) and never when it is a player's name (säkerhetsgranskningen L13). Every new cast clears
+-- the previous name, and the loot window uses it at most once.
+local function onSpellcastSent(unit, target, _, spellId)
+  if unit ~= "player" then return end
+  session.sentName, session.sentAt = nil, 0
+  local name = str(target)
+  local g = gatherKind(spellId)
+  if not name or not (openSpell(spellId) or g == "mine" or g == "herb") then return end
+  if playerName(name) then return end
+  session.sentName = name
+  session.sentAt = num(try(GetTime)) or 0
 end
 
 -- UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID): remember a finished gathering cast for the next LOOT_OPENED.
@@ -767,6 +826,7 @@ local function onLootOpened()
         touch("loot", tostring(id))
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
+          session.sentName, session.sentAt = nil, 0   -- used once (L13)
           noteObject(id, name)
         end
       end
@@ -800,6 +860,129 @@ local function onTaxiMapOpened()
       return
     end
   end
+end
+
+---------------------------------------------------------------------------
+-- Mobs and NPCs you only look at (PLAYER_TARGET_CHANGED / UPDATE_MOUSEOVER_UNIT), 1.0.4
+---------------------------------------------------------------------------
+
+-- UnitClassification values; anything else (or a secret) is left out.
+local CLASSIFICATIONS = { normal = true, elite = true, rare = true, rareelite = true, worldboss = true, trivial = true, minus = true }
+-- Creature type ids (CreatureType.db2) by English name – fallback when UnitCreatureType has no id return.
+local CREATURE_TYPES = {
+  Beast = 1, Dragonkin = 2, Demon = 3, Elemental = 4, Giant = 5, Undead = 6, Humanoid = 7, Critter = 8,
+  Mechanical = 9, ["Not specified"] = 10, Totem = 11, ["Non-combat Pet"] = 12, ["Gas Cloud"] = 13, ["Wild Pet"] = 14, Aberration = 15,
+}
+
+-- In combat (or unknown): mobs are skipped – unit data may be secret then, and it is not needed.
+local function inCombat()
+  if unitFlag(InCombatLockdown) ~= false then return true end
+  return unitFlag(UnitAffectingCombat, "player") ~= false
+end
+
+-- A creature that no player controls: never a player, a pet, a guardian, a totem or a companion (their names
+-- can be chosen by players). Every check must answer a clean "no"; unknown counts as "yes" and skips the unit.
+local function wildNpc(unit)
+  if unitFlag(UnitExists, unit) ~= true then return false end
+  if unitFlag(UnitIsPlayer, unit) ~= false then return false end
+  if unitFlag(UnitPlayerControlled, unit) ~= false then return false end
+  if UnitIsOtherPlayersPet and unitFlag(UnitIsOtherPlayersPet, unit) ~= false then return false end
+  if UnitIsBattlePetCompanion and unitFlag(UnitIsBattlePetCompanion, unit) ~= false then return false end
+  if UnitIsUnit and unitFlag(UnitIsUnit, unit, "pet") == true then return false end
+  return true
+end
+
+local function creatureType(unit)
+  local name, id = try(UnitCreatureType, unit)
+  id = num(id)
+  if id and id >= 1 and id <= 50 then return id end
+  name = str(name)
+  return name and CREATURE_TYPES[name] or nil
+end
+
+-- Adds the player's position as an approximate area unless a saved area on the same map is within MOB_RADIUS.
+-- The time is rounded to the day: an area says where a mob lives, not when the player was there.
+local function addArea(rec)
+  local m, x, y = playerPos()
+  if not m then return false end
+  rec.a = rec.a or {}
+  for _, s in ipairs(rec.a) do
+    if s.m == m and abs((s.x or 0) - x) < MOB_RADIUS and abs((s.y or 0) - y) < MOB_RADIUS then return false end
+  end
+  if #rec.a >= MOB_AREAS then return false end
+  rec.a[#rec.a + 1] = { m = m, x = x, y = y, t = floor(now() / 86400) * 86400, q = nextSeq() }
+  return true
+end
+
+local function noteMob(unit)
+  if inCombat() then return end
+  local guid = str(try(UnitGUID, unit))
+  local kind, id = parseGuid(guid)
+  if kind ~= "npc" then return end            -- players' and pets' GUIDs are not even remembered
+  local t = num(try(GetTime)) or 0
+  local last = session.mobSeen[guid]
+  if last and t - last < MOB_REPEAT then return end
+  if not last then
+    if session.mobSeenN >= MOB_GUIDS then session.mobSeen = {}; session.mobSeenN = 0 end
+    session.mobSeenN = session.mobSeenN + 1
+  end
+  session.mobSeen[guid] = t
+  if not wildNpc(unit) then return end
+  local name = str(try(UnitName, unit))
+  if not name then return end
+  local ct = creatureType(unit)
+  if ct == 11 or ct == 12 then return end      -- totems and companion pets belong to players
+  local rec = db.mobs[id]
+  local isNew = not rec
+  if isNew then
+    if session.mobCount >= MAX_MOBS then return end
+    rec = {}; db.mobs[id] = rec; session.mobCount = session.mobCount + 1
+  end
+  rec.n = name
+  local l = num(try(UnitLevel, unit))
+  if l and l > 0 then
+    if not rec.lmin or rec.lmin < 1 then rec.lmin, rec.lmax = l, l
+    else rec.lmin, rec.lmax = math.min(rec.lmin, l), math.max(rec.lmax or l, l) end
+  elseif l == -1 and not rec.lmin then
+    rec.lmin, rec.lmax = -1, -1                 -- "??" (skull)
+  end
+  rec.r = reactionWord(try(UnitReaction, unit, "player")) or rec.r
+  rec.pf = str(try(UnitFactionGroup, "player")) or rec.pf
+  local c = str(try(UnitClassification, unit))
+  if c and CLASSIFICATIONS[c] then rec.c = c end
+  if ct then rec.ct = ct end
+  if addArea(rec) or isNew then touch("mob", name) end
+end
+
+---------------------------------------------------------------------------
+-- Mailboxes and service NPCs (1.0.4)
+---------------------------------------------------------------------------
+
+-- MAIL_SHOW: a mailbox is a game object, so the position is the player's (standing at it). A creature as the
+-- interaction unit (a summoned courier) is not a mailbox. The object id is kept when the client gives it.
+local function onMailShow()
+  local kind, id = parseGuid(try(UnitGUID, "npc"))
+  if kind == "npc" then return end
+  local m, x, y = playerPos()
+  if not m then return end
+  for _, s in ipairs(db.mail) do
+    if s.m == m and abs((s.x or 0) - x) < MAIL_RADIUS and abs((s.y or 0) - y) < MAIL_RADIUS then return end
+  end
+  db.mail[#db.mail + 1] = { m = m, x = x, y = y, t = now(), q = nextSeq(), id = (kind == "object") and id or nil }
+  while #db.mail > MAX_MAIL do table.remove(db.mail, 1) end
+  touch("mail", tostring(m))
+end
+
+-- PLAYER_INTERACTION_MANAGER_FRAME_SHOW(type) (Mainline): the interaction type names are looked up in
+-- Enum.PlayerInteractionType, never as numbers – a name the client lacks simply never matches.
+local function onInteractionShow(kind)
+  local PIT = Enum and Enum.PlayerInteractionType
+  kind = num(kind)
+  if type(PIT) ~= "table" or not kind then return end
+  if kind == PIT.Auctioneer then noteUnit("npc", { auction = true })
+  elseif kind == PIT.StableMaster then noteUnit("npc", { stable = true })
+  elseif kind == PIT.SpiritHealer then noteUnit("npc", { spirit = true })
+  elseif kind == PIT.MailInfo then onMailShow() end
 end
 
 ---------------------------------------------------------------------------
@@ -866,7 +1049,7 @@ local function newInstallId()
 end
 
 local function ensureTables(d)
-  for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights" }) do
+  for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail" }) do
     if type(d[k]) ~= "table" then d[k] = {} end
   end
 end
@@ -884,6 +1067,8 @@ local function initDb()
   if type(db.install) ~= "string" or #db.install < 8 then db.install = newInstallId() end
   db.seq = tonumber(db.seq) or 0
   ensureTables(db)
+  session.mobCount = 0
+  for _ in pairs(db.mobs) do session.mobCount = session.mobCount + 1 end
   if type(ForeverScoutOpt) ~= "table" then ForeverScoutOpt = { char = false } end
   opt = ForeverScoutOpt
 end
@@ -921,13 +1106,13 @@ local function showStatus()
   local L = T()
   local c = {
     count(db.npcs), count(db.trainers), count(db.vendors), count(db.quests),
-    count(db.objects), #db.loot, count(db.flights),
+    count(db.objects), #db.loot, count(db.flights), count(db.mobs), #db.mail,
   }
   local total = 0
   for _, v in ipairs(c) do total = total + v end
   say(string.format(L.status_head, VERSION, total, db.seq or 0))
   if total == 0 then say(L.status_none); return end
-  say(string.format(L.status_counts, c[1], c[2], c[3], c[4], c[5], c[6], c[7]))
+  say(string.format(L.status_counts, c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9]))
   if session.lastKind then
     say(string.format(L.status_last, L["kind_" .. session.lastKind] or session.lastKind,
       tostring(session.lastName), ago(L, now() - (session.lastTime or now()))))
@@ -960,10 +1145,11 @@ local function onSlash(msg)
     say(string.format(L.lang_set, opt.lang or "auto"))
   elseif cmd == "reset" then
     if arg == "confirm" and session.resetArmed then
-      for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights" }) do db[k] = {} end
+      for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail" }) do db[k] = {} end
       db.char = nil
       session.looted = {}
       session.objPending = {}
+      session.mobSeen, session.mobSeenN, session.mobCount = {}, 0, 0
       session.resetArmed = false
       say(L.reset_done)       -- seq and install are kept so the uploader never re-sends old posts
     else
@@ -1003,6 +1189,13 @@ local handlers = {
   QUEST_COMPLETE = function() onQuestEnd(true) end,
   TAXIMAP_OPENED = onTaxiMapOpened,
   BANKFRAME_OPENED = function() noteUnit("npc", nil) end,
+  -- 1.0.4: mobs you only look at, mailboxes and service NPCs (auction house, stable, spirit healer).
+  PLAYER_TARGET_CHANGED = function() noteMob("target") end,
+  UPDATE_MOUSEOVER_UNIT = function() noteMob("mouseover") end,
+  MAIL_SHOW = onMailShow,
+  AUCTION_HOUSE_SHOW = function() noteUnit("npc", { auction = true }) end,
+  PET_STABLE_SHOW = function() noteUnit("npc", { stable = true }) end,
+  PLAYER_INTERACTION_MANAGER_FRAME_SHOW = onInteractionShow,
   UNIT_SPELLCAST_SENT = onSpellcastSent,
   UNIT_SPELLCAST_SUCCEEDED = onSpellcastSucceeded,
   LOOT_OPENED = onLootOpened,
@@ -1054,4 +1247,8 @@ if SlashCmdList then
 end
 
 -- Test hook (only used by the offline mock test; harmless in game).
-ns._test = { session = session, parseGuid = parseGuid, clean = clean }
+ns._test = {
+  session = session, parseGuid = parseGuid, clean = clean, db = function() return db end,
+  noteMob = noteMob, wildNpc = wildNpc, onSpellcastSent = onSpellcastSent, onLootOpened = onLootOpened,
+  onMailShow = onMailShow, onInteractionShow = onInteractionShow, handlers = handlers,
+}

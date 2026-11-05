@@ -128,14 +128,13 @@ public class VariantReleaseTests
     }
 
     [Fact]
-    public void WithoutSignature2NewClientUsesOldSignatureAndIgnoresLite()
+    public void WithoutSignature2NewClientRefusesButOldClientsStillVerify()
     {
+        // 1.0.7 (L10): ingen reserv till den gamla signaturen – en fil utan signature2 godtas inte.
         var n = JsonNode.Parse(V2Json)!.AsObject();
         n.Remove("signature2");
-        var r = ReleaseVerifier.Verify(n.ToJsonString(), PublicKey);
-        Assert.False(r.HasSignature2);
-        Assert.Null(r.LiteFile); // osignerade lite-fält används aldrig
-        Assert.NotNull(r.ClientFile);
+        Assert.Equal(ErrorCodes.SignatureMissing, Code(() => ReleaseVerifier.Verify(n.ToJsonString(), PublicKey)));
+        Assert.Equal("1.0.3", Old.ReleaseVerifier.Verify(n.ToJsonString(), PublicKey).Client);
     }
 
     [Fact]

@@ -91,8 +91,10 @@ public sealed class ApiClient : IDisposable
 #else
         BaseUri = ResolveBaseUri(null); // Release: FOREVERSCOUT_BASEURL och baseUrl ignoreras
 #endif
+        // L12: omdirigeringar följs aldrig – en 307/308 skulle annars skicka POST-kroppen (uppladdningen) till en annan
+        // värd. Ett 3xx-svar blir felet "redirect" (RefuseRedirect), oavsett hanterare.
         _http = handler is null
-            ? new HttpClient(new SocketsHttpHandler { AutomaticDecompression = DecompressionMethods.All, UseCookies = false, UseProxy = true })
+            ? new HttpClient(new SocketsHttpHandler { AutomaticDecompression = DecompressionMethods.All, UseCookies = false, UseProxy = true, AllowAutoRedirect = false })
             : new HttpClient(handler);
         _http.Timeout = TimeSpan.FromSeconds(120);
         _http.DefaultRequestHeaders.UserAgent.Clear();
@@ -136,10 +138,17 @@ public sealed class ApiClient : IDisposable
         catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new ApiException(ErrorCodes.Timeout, transient: true); }
         using (resp)
         {
+            RefuseRedirect(resp);
             if (!resp.IsSuccessStatusCode) throw await ErrorFrom(resp, ct);
             try { return await resp.Content.ReadFromJsonAsync<T>(ct) ?? throw new ApiException(ErrorCodes.EmptyResponse, resp.StatusCode); }
             catch (JsonException) { throw new ApiException(ErrorCodes.BadResponse, resp.StatusCode); }
         }
+    }
+
+    /// <summary>L12: ett 3xx-svar är ett fel (följs aldrig, och skickas aldrig om någon annanstans).</summary>
+    private static void RefuseRedirect(HttpResponseMessage resp)
+    {
+        if ((int)resp.StatusCode is >= 300 and < 400) throw new ApiException(ErrorCodes.Redirect, resp.StatusCode);
     }
 
     /// <summary>Felsvar → ApiException med serverns kod ("code") om den finns, annars "http".</summary>
@@ -236,6 +245,7 @@ public sealed class ApiClient : IDisposable
         catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new ApiException(ErrorCodes.Timeout, transient: true); }
         using (resp)
         {
+            RefuseRedirect(resp);
             if (!resp.IsSuccessStatusCode) throw await ErrorFrom(resp, ct);
             var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
             if (bytes.Length > maxBytes) throw new ApiException(ErrorCodes.BadResponse);
@@ -259,6 +269,7 @@ public sealed class ApiClient : IDisposable
         catch (HttpRequestException) { throw new ApiException(ErrorCodes.Network, transient: true); }
         using (resp)
         {
+            RefuseRedirect(resp);
             if (!resp.IsSuccessStatusCode) throw new ApiException(ErrorCodes.Http, resp.StatusCode);
             await using var s = await resp.Content.ReadAsStreamAsync(ct);
             using var ms = new MemoryStream();

@@ -16,6 +16,14 @@ annan källfil använder `File.`, `Directory.`, `FileStream`, `StreamReader(sök
 (HttpClient får bara användas i `ApiClient.cs`). `SafeFsTests` täcker `..`, symlänkar/junctions, andra enheter,
 UNC-/enhetssökvägar, alternativa dataströmmar och andra filer i WoW-katalogen.
 
+**Kontroll efter öppning (1.0.7).** Reglerna kontrolleras först på sökvägen. Sedan öppnas filen via ett handtag, och
+handtagets verkliga sökväg (`GetFinalPathNameByHandle`, efter alla junctions och symlänkar) måste ligga på exakt samma
+plats i det tillåtna området. Läsning sker ur samma handtag. Skrivning går till en temporärfil via handtag och döps om
+via handtaget (`NtSetInformationFile`, bara nytt filnamn i samma katalog), och radering sker via handtaget. Byts en
+katalog ut mot en junction mellan kontrollen och användningen nekas åtkomsten. Katalogoperationerna (skapa, radera,
+flytta – bara addonens och självuppdateringens fasta namn) kontrolleras via handtag direkt före respektive efter.
+`SafeFsTests` (L11_*) byter ut kataloger mot junctions just i det fönstret.
+
 **Filer under den valda WoW-katalogen** (t.ex. `…\World of Warcraft\_forever_`):
 | Sökväg | Åtkomst |
 |---|---|
@@ -65,11 +73,14 @@ Knappen **Öppna logg** finns i Inställningar.
 ## Vad den gör
 - WoW-katalogen hittas via registrets `InstallPath` (föräldern och `_forever_` testas) eller standardsökvägar.
   Annars väljer du själv (Inställningar → WoW-katalog). Kataloger som börjar eller slutar med `_` och innehåller
-  `Interface` eller `WTF` räknas som kandidater, och `_forever_` sorteras först.
+  `Interface` eller `WTF` räknas som kandidater, och `_forever_` sorteras först. **Från 1.0.7** används en automatiskt
+  hittad katalog först när du bekräftat den (en gång, frågan visar sökvägen). Svarar du Nej föreslås den inte igen och
+  du väljer själv. Inställningar från 1.0.6 och äldre (där katalogen kan ha hittats automatiskt) bekräftas också en gång.
 - Addonen installeras i `<spel>\Interface\AddOns\ForeverScout`. Den bäddas in i exe:n vid bygget och tas från
   `client/addon/ForeverScout/**` som den ser ut då. Nyare addonversioner hämtas bara som **signerade** släpp (se
-  "Signerade uppdateringar"). Det sker automatiskt när den installerade versionen finns i `blockedAddons`, när servern
-  svarar `422 addon-blocked` och när ett nyare signerat släpp finns. Filer med en spärrad addonversion laddas inte upp.
+  "Signerade uppdateringar") och bara om de är **nyare** än den installerade (eller om ingen addon finns). Spärrlistan
+  `blockedAddons` och serverns `422 addon-blocked` är inte signerade: från 1.0.7 stoppar de bara uppladdningen av den
+  spärrade versionen och visar ett meddelande, och de leder aldrig till att en äldre addon installeras.
 - **Uppladdning när spelet sparat** (`SyncCoordinator`). `WTF\Account\*\SavedVariables\ForeverScout.lua` bevakas med
   FileSystemWatcher. Som reserv pollas filerna var 30:e sekund, eftersom FSW missar händelser på vissa diskar.
   Uppladdningen följer de här reglerna:
@@ -174,8 +185,12 @@ Klienten installerar en ny exe eller addon-zip **bara** om den är signerad med 
      till full-exe:n (`clientFile`).
    - `signature2` täcker de gamla fälten plus `lite, liteFile, liteSha256, liteSig` och
      `setup, setupFile, setupSha256, setupSig`. Klienter från 1.0.3 verifierar den, och om den finns måste den
-     stämma (ingen reserv). Sedan väljer de fil efter variant: full uppdateras från `clientFile`, lite från
-     `liteFile`. Installationsprogrammet (`setup`) används bara på nedladdningssidan.
+     stämma (ingen reserv). **Från 1.0.7 krävs den**: en versionsinfo med bara `signature` godtas inte. Sedan väljer
+     de fil efter variant: full uppdateras från `clientFile`, lite från `liteFile`. Installationsprogrammet (`setup`)
+     används bara på nedladdningssidan.
+   - `issued` (signerad tidsstämpel) får inte gå bakåt (från 1.0.7): klienten sparar det högsta värdet den godtagit i
+     `settings.json` (`ReleaseIssued`) och avvisar äldre versionsinfo, så att en gammal men korrekt signerad fil inte
+     kan spelas upp igen. scout-sign.mjs sätter alltid ett nytt `issued`.
    - För båda gäller kanonisk JSON med fälten i bokstavsordning, utan blanksteg och med saknat fält som `null`.
      Filsignaturen gäller `ForeverScout-file/v1\n<client|lite|setup|addon>\n<version>\n<sha256>`, så att en fil inte
      kan utges för en annan typ.
@@ -234,7 +249,10 @@ Installationsprogrammet (`installer/ForeverScout.iss`):
   `Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\10.*`) får användaren först veta att Windows kommer att be
   om administratörsbehörighet. Sedan erbjuds det att hämta Microsofts officiella installationsprogram över HTTPS
   (`https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe` → builds.dotnet.microsoft.com) och köra det med
-  UAC. Avböjer man visas länken.
+  UAC. Avböjer man visas länken. **Från 1.0.7** startas den hämtade filen bara om `Get-AuthenticodeSignature` ger
+  `Valid` och både certifikatets ägare och utfärdare har `O=Microsoft Corporation` (i dag "CN=.NET" utfärdat av
+  "Microsoft Code Signing PCA 2024"). Filen hålls öppen med skrivskydd från kontrollen tills installationen är klar, så
+  att den inte kan bytas ut däremellan. Annars visas ett meddelande och Microsofts nedladdningssida öppnas i stället.
 - Uppgradering: `AppMutex=Local\ForeverScout.SingleInstance` och `CloseApplications=force` stänger en körande
   Forever Scout först.
 - Avinstallation: tar bort exe, genvägar, självuppdateringens restfiler och autostartvärdet. Den frågar, med Nej som

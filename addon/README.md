@@ -3,7 +3,7 @@
 ForeverScout samlar in data om WoW: Forever-världen medan du spelar: var NPC:er står, vad tränare lär ut, vad försäljare säljer, quests, malmådror och örter, loot och flygpunkter. Datan laddas upp till [guide.wow4ever.se](https://guide.wow4ever.se/bidra) och visas i Forever-guiden. När minst två spelare har rapporterat samma sak räknas den som bekräftad.
 
 - Spel: WoW: Forever (klient 1.60.x, `## Interface: 16001`)
-- Version: 1.0.3
+- Version: 1.0.4
 - Filformat: `docs/briefs/SCOUT-KONTRAKT.md` §1 (`ForeverScoutDB`, `v = 1`)
 
 ## Installation
@@ -46,6 +46,9 @@ Positioner sparas som kart-id (UiMapID) plus x/y i procent och tas när ett fön
 | Objekt | gameobject-id, namn (t.ex. "Copper Vein") och upp till 50 positioner |
 | Loot | källa (`src`) med id, föremål med antal, och pengar. Högst 2 000 poster, och de äldsta tas bort först. Källorna:<br>`npc`, `object` och `item` är vanlig loot från en varelse, ett objekt eller en behållare.<br>`skin`, `mine` och `herb` är flåning, gruvdrift och örtplockning av en *varelse* (id = varelsens id). Malmådror och örter är objekt och förblir `object`.<br>`fish` är fiske (id = kartans uiMapID, plus position `m`/`x`/`y`).<br>Varje (källa, typ) räknas en gång per session, så vanlig loot och flåning av samma kropp blir två poster utan att den ena blockerar den andra |
 | Flygpunkter | nod-id, namn och position (den flygpunkt du står vid) |
+| Mobs (från 1.0.4) | NPC:er du bara tittar på (mål eller muspekare, utanför strid): creature-id, namn, nivåintervall, reaktion mot dig, din fraktion, klassificering (normal, elit, sällsynt, sällsynt elit, världsboss) och varelsetyp (som tal). **Ungefärligt område** = *din* position när du såg den, aldrig mobens. Ett nytt område sparas bara om det ligger mer än 5 kart-% från ett sparat område på samma karta, högst 8 per mob, och tiden avrundas till dagen. Högst 3 000 mobs |
+| Brevlådor (från 1.0.4) | position när du öppnar en brevlåda (och objektets id om spelet ger det). Högst 300, en per brevlåda |
+| Roller (från 1.0.4) | auktionsförrättare, stallmästare och andeläkare läggs till som roller på NPC:n när du öppnar deras fönster |
 | Huvud | formatversion, addonversion, spelets build, spelets språk, ett slumpat installations-id och `seq` (en räknare som ökar för varje ny post, så att klienten vet vad som redan är uppladdat) |
 
 **Valfritt (`/scout char on`):** klass, ras, nivå, yrken med färdighetsnivå och inlärda recept (spell-id). Det är avstängt som standard, och du väljer per karaktär.
@@ -54,7 +57,8 @@ Positioner sparas som kart-id (UiMapID) plus x/y i procent och tas när ett fön
 
 - Inga karaktärsnamn, ingen realm, inget kontonamn, ingen guild och inga namn på andra spelare.
 - Inga fullständiga GUID:er. Bara creature-, objekt- eller föremåls-id:t (fält 6) sparas. Addonen försöker inte ta reda på server, layer eller shard.
-- Ingen chatt, ingen combat log, inga positioner i instanser och ingen spårning av var du rör dig. En position sparas bara när du själv öppnar ett fönster.
+- Ingen chatt, ingen combat log, inga positioner i instanser och ingen spårning av var du rör dig. En exakt position sparas bara när du själv öppnar ett fönster. Mobs får bara ett ungefärligt område per 5 kart-% (din position när du tittade på dem, dagen utan klockslag) – inte en rutt.
+- Mål och muspekare: bara varelser som ingen spelare styr. Spelare, husdjur, väktare, totem och sällskapsdjur hoppas alltid över (deras namn kan spelare välja), liksom allt där spelet inte svarar säkert (secret values). Inget läses i strid.
 - Installations-id:t är ett slumptal, skapat en gång. Det är inte kopplat till ditt Battle.net-konto.
 - Addonen läser inga andra addons data och skickar ingenting själv. Det enda den gör är att skriva sin egen SavedVariables-fil.
 
@@ -67,6 +71,7 @@ Kontonamnet syns i sökvägen till filen (`WTF\Account\<KONTO>\`). Klienten skic
 - **Tränartjänsternas spell-id** läses via `C_TooltipInfo.GetTrainerService`. Om det saknas används `GetTrainerServiceItemLink`.
 - **Flåning och annan insamling** (från 1.0.3) känns igen på en lyckad Skinning/Mining/Herbalism-besvärjelse (alla id:n i Forevers spelfiler, och namnet som reserv) högst 3 sekunder före lootfönstret. Den gäller bara det lootfönstret. Fiske känns igen med `IsFishingLoot()`.
 - **Questmål utan föremålsnamn** (t.ex. "0/8 ", eftersom namnet inte hunnit laddas) läses om vid `QUEST_LOG_UPDATE` och `ITEM_DATA_LOAD_RESULT`, högst en gång per sekund och högst 20 gånger. När namnet kommer uppdateras posten och får ny `seq`, så att den laddas upp igen. En läsbar text ersätts aldrig av en ofullständig.
-- **Objektnamn** tas från målet för den senaste besvärjelse du kastade (t.ex. Mining på "Copper Vein") inom 15 sekunder före lootfönstret. Saknas ett sådant namn sparas bara id:t.
+- **Objektnamn** tas från målet för den senaste besvärjelse du kastade inom 15 sekunder före lootfönstret, men bara för Opening-, Mining- och Herb Gathering-besvärjelser (från 1.0.4, säkerhetsgranskningen L13) och aldrig om namnet är en spelares. Namnet används en gång och nollställs vid nästa besvärjelse. Saknas ett sådant namn sparas bara id:t.
+- **Tjänste-NPC:er och brevlådor** (från 1.0.4): `MAIL_SHOW`, `AUCTION_HOUSE_SHOW`, `PET_STABLE_SHOW` och Mainlines `PLAYER_INTERACTION_MANAGER_FRAME_SHOW` (typerna slås upp med namn i `Enum.PlayerInteractionType`: `Auctioneer`, `StableMaster`, `SpiritHealer`, `MailInfo`). Händelser som klienten saknar registreras inte och gör ingenting.
 - **Quests:** `minLvl` finns inte i Mainline-API:t och lämnas tomt. Nivån läses ur questloggen när du accepterar questen.
 - **Vapen- och ridtränare** känns bara igen på den engelska undertiteln. Annars blir de `class`.

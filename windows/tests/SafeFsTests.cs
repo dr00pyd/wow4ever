@@ -110,6 +110,137 @@ public sealed class SafeFsTests : IDisposable
         Directory.Delete(link); // tar bara bort länken
     }
 
+    // ---------------------------------------------------------------- L11: kontroll efter öppning (GetFinalPathNameByHandle)
+
+    private static void Junction(string link, string target)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true };
+        using (var p = System.Diagnostics.Process.Start(psi)!) { p.StandardOutput.ReadToEnd(); p.WaitForExit(); }
+        Assert.True(Directory.Exists(link), "kunde inte skapa junction");
+    }
+
+    /// <summary>
+    /// Byter <paramref name="dir"/> mot en junction till <paramref name="target"/> EFTER regelkontrollen men före
+    /// öppningen (det fönster som en annan lokal användare med skrivrätt i spelkatalogen skulle utnyttja).
+    /// </summary>
+    private static IDisposable SwapAfterCheck(string dir, string target)
+    {
+        var backup = dir + ".bak";
+        bool swapped = false;
+        SafeFs.BeforeOpen = _ =>
+        {
+            if (swapped) return;
+            swapped = true;
+            Directory.Move(dir, backup);
+            Junction(dir, target);
+        };
+        return new Restore(() =>
+        {
+            SafeFs.BeforeOpen = null;
+            if (!swapped) return;
+            Directory.Delete(dir); // bara länken
+            Directory.Move(backup, dir);
+        });
+    }
+
+    private sealed class Restore(Action a) : IDisposable { public void Dispose() => a(); }
+
+    [Fact]
+    public void L11_JunctionSwappedInAfterTheCheckIsNotRead()
+    {
+        var outside = Path.Combine(_tmp.FullName, "evil-acc");
+        Directory.CreateDirectory(Path.Combine(outside, "SavedVariables"));
+        File.WriteAllText(Path.Combine(outside, "SavedVariables", "ForeverScout.lua"), "ForeverScoutDB = { evil = 1 }");
+        var file = G("WTF", "Account", "ACC", "SavedVariables", "ForeverScout.lua");
+        using (SwapAfterCheck(G("WTF", "Account", "ACC"), outside))
+        {
+            var ex = Assert.Throws<SafeFsException>(() => SafeFs.ReadAllBytes(file));
+            Assert.Equal("final-path", ex.Reason);
+        }
+        Assert.Equal("ForeverScoutDB = {}", SafeFs.ReadAllText(file)); // utan bytet fungerar läsningen
+    }
+
+    [Fact]
+    public void L11_JunctionSwappedInAfterTheCheckIsNotWrittenTo()
+    {
+        var outside = Path.Combine(_tmp.FullName, "evil-addon");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "ForeverScout.toc"), "victim");
+        var toc = G("Interface", "AddOns", "ForeverScout", "ForeverScout.toc");
+        using (SwapAfterCheck(G("Interface", "AddOns", "ForeverScout"), outside))
+            Assert.Equal("final-path", Assert.Throws<SafeFsException>(() => SafeFs.WriteAllText(toc, "## Version: 9")).Reason);
+        // Målet utanför är orört, och temporärfilen som hann skapas där är borttagen via handtaget.
+        Assert.Equal("victim", File.ReadAllText(Path.Combine(outside, "ForeverScout.toc")));
+        Assert.False(File.Exists(Path.Combine(outside, "ForeverScout.toc.tmp")));
+    }
+
+    [Fact]
+    public void L11_AppendAndDeleteThroughSwappedJunctionAreRefused()
+    {
+        var outside = Path.Combine(_tmp.FullName, "evil-dir");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "ForeverScout.lua"), "keep");
+        var target = G("Interface", "AddOns", "ForeverScout", "ForeverScout.lua");
+        File.WriteAllText(target, "ours");
+        using (SwapAfterCheck(G("Interface", "AddOns", "ForeverScout"), outside))
+            Assert.Equal("final-path", Assert.Throws<SafeFsException>(() => SafeFs.DeleteFile(target)).Reason);
+        using (SwapAfterCheck(G("Interface", "AddOns", "ForeverScout"), outside))
+            Assert.Equal("final-path", Assert.Throws<SafeFsException>(() => SafeFs.AppendText(target, "more")).Reason);
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(outside, "ForeverScout.lua")));
+        Assert.Equal("ours", File.ReadAllText(target));
+        SafeFs.DeleteFile(target); // utan bytet raderas vår egen fil
+        Assert.False(File.Exists(target));
+    }
+
+    [Fact]
+    public void L11_HandleBasedWriteReplacesInPlaceAndLeavesNoTmp()
+    {
+        var toc = G("Interface", "AddOns", "ForeverScout", "ForeverScout.toc");
+        SafeFs.WriteAllText(toc, "## Version: 1");
+        SafeFs.WriteAllText(toc, "## Version: 2"); // ersätter befintlig fil (namnbyte på handtaget)
+        Assert.Equal("## Version: 2", File.ReadAllText(toc));
+        Assert.False(File.Exists(toc + ".tmp"));
+        Assert.False(File.Exists(Path.Combine(Environment.CurrentDirectory, "ForeverScout.toc"))); // namnbytet hamnar i samma katalog
+        SafeFs.WriteAllBytes(toc, []);
+        Assert.Empty(File.ReadAllBytes(toc));
+        // Appdata: skriv, lägg till och läs tillbaka.
+        var log = Path.Combine(SafeFs.AppDataDir, "l11-append.log");
+        SafeFs.DeleteFile(log);
+        SafeFs.AppendText(log, "a\n");
+        SafeFs.AppendText(log, "b\n");
+        Assert.Equal("a\nb\n", SafeFs.ReadAllText(log));
+        SafeFs.DeleteFile(log);
+    }
+
+    [Fact]
+    public void L11_ShortNamesInTheChosenFolderStillWork()
+    {
+        // Datorer med 8.3-namn (t.ex. C:\Users\ADMINI~1\…): handtagets sökväg har långa namn, området jämförs i samma form.
+        var buf = new System.Text.StringBuilder(1024);
+        var shortGame = GetShortPathNameW(_game, buf, buf.Capacity) > 0 ? buf.ToString() : _game;
+        var root = SafeFs.SetGameDir(shortGame)!;
+        Assert.Equal("ForeverScoutDB = {}", SafeFs.ReadAllText(Path.Combine(root, "WTF", "Account", "ACC", "SavedVariables", "ForeverScout.lua")));
+        SafeFs.WriteAllText(Path.Combine(root, "Interface", "AddOns", "ForeverScout", "x.lua"), "x");
+        Assert.Equal("x", File.ReadAllText(G("Interface", "AddOns", "ForeverScout", "x.lua")));
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetShortPathNameW(string longPath, System.Text.StringBuilder shortPath, int size);
+
+    [Fact]
+    public void L11_DirectoryOperationsThroughSwappedJunctionAreRefused()
+    {
+        var outside = Path.Combine(_tmp.FullName, "evil-addons");
+        Directory.CreateDirectory(Path.Combine(outside, "ForeverScout.old"));
+        File.WriteAllText(Path.Combine(outside, "ForeverScout.old", "precious.txt"), "keep");
+        Directory.CreateDirectory(G("Interface", "AddOns", "ForeverScout.old"));
+        using (SwapAfterCheck(G("Interface", "AddOns"), outside))
+            Assert.Equal("final-path", Assert.Throws<SafeFsException>(() => SafeFs.DeleteDirectory(G("Interface", "AddOns", "ForeverScout.old"))).Reason);
+        Assert.True(File.Exists(Path.Combine(outside, "ForeverScout.old", "precious.txt")));
+        SafeFs.DeleteDirectory(G("Interface", "AddOns", "ForeverScout.old"));
+        Assert.False(Directory.Exists(G("Interface", "AddOns", "ForeverScout.old")));
+    }
+
     [Fact]
     public void ProbeRootsAllowOnlyExistenceNotContent()
     {

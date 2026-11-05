@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 
 namespace ForeverScout.Core;
 
@@ -36,6 +38,12 @@ public sealed class SafeFsException(string reason, string path) : ScoutException
 /// exakt filen <c>~/Library/LaunchAgents/se.wow4ever.foreverscout.plist</c> ("Starta vid inloggning"), det egna
 /// <c>.app</c>-paketet (bara som helhet, för bytet) och uppdateringskatalogen <c>.ForeverScout-update</c> bredvid det.
 /// <c>..</c>, relativa sökvägar, <c>..namedfork</c> (resursgrenar) och symlänkar nekas. Windows-vägen är oförändrad.</para>
+/// <para><b>Kontroll efter öppning (L11, 1.0.7).</b> Reglerna ovan kontrolleras på sökvägen; mellan kontrollen och
+/// användningen kan en annan lokal användare med skrivrätt i spelkatalogen byta en katalog mot en junction. På Windows
+/// öppnas därför filer via handtag och handtagets verkliga sökväg (GetFinalPathNameByHandle) jämförs med det tillåtna
+/// områdets – läsning sker ur samma handtag, skrivning går via temporärfil + namnbyte på handtaget, radering via
+/// handtaget. Katalogoperationerna (skapa, radera, flytta – bara våra egna fasta namn) kontrolleras via handtag precis
+/// före (resp. efter) operationen. På macOS görs symlänkskontrollen om efter öppningen, se <see cref="VerifyOpened"/>.</para>
 /// </summary>
 public static class SafeFs
 {
@@ -334,7 +342,10 @@ public static class SafeFs
     }
 
     /// <summary>Kontrollerar en sökväg mot reglerna och returnerar den normaliserade sökvägen.</summary>
-    public static string Check(string path, Access want, bool isDir)
+    public static string Check(string path, Access want, bool isDir) => CheckScoped(path, want, isDir).Full;
+
+    /// <summary>Som <see cref="Check"/>, men returnerar även det tillåtna område (rot) som sökvägen godkändes under.</summary>
+    private static (string Full, string Scope) CheckScoped(string path, Access want, bool isDir)
     {
         var full = Normalize(path);
         string? scopeRoot = null;
@@ -354,7 +365,7 @@ public static class SafeFs
         if (allowed is null && !isDir && IsOwnExeFile(full)) { allowed = Access.Write; scopeRoot = full; }
         if (allowed is null || allowed < want) throw new SafeFsException(allowed is null ? "outside" : "access", full);
         RefuseReparsePoints(full, scopeRoot!);
-        return full;
+        return (full, scopeRoot!);
     }
 
     // ------------------------------------------------------------------ macOS: paketet, uppdateringen och LaunchAgent
@@ -485,11 +496,17 @@ public static class SafeFs
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    /// <summary>Läser hela filen med FileShare.ReadWrite (spelet kan ha den öppen).</summary>
+    /// <summary>
+    /// Läser hela filen med FileShare.ReadWrite (spelet kan ha den öppen). L11: filen öppnas först och sedan kontrolleras
+    /// vart handtaget faktiskt pekar (<see cref="VerifyOpened"/>); innehållet läses ur samma handtag.
+    /// </summary>
     public static byte[] ReadAllBytes(string path, long maxBytes = 64L * 1024 * 1024)
     {
-        var p = Check(path, Access.Read, isDir: false);
-        using var fs = new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var (p, scope) = CheckScoped(path, Access.Read, isDir: false);
+        BeforeOpen?.Invoke(p);
+        using var h = File.OpenHandle(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        VerifyOpened(h, p, scope);
+        using var fs = new FileStream(h, FileAccess.Read);
         if (fs.Length > maxBytes) throw new ScoutException(ErrorCodes.FileTooLarge);
         using var ms = new MemoryStream();
         fs.CopyTo(ms);
@@ -502,41 +519,280 @@ public static class SafeFs
     /// <summary>Skriver atomärt (temporärfil + namnbyte).</summary>
     public static void WriteAllBytes(string path, byte[] data) => WriteAllBytes(path, data, null);
 
-    /// <summary>Som ovan; <paramref name="retry"/> (t.ex. IoRetry) omsluter namnbytet, som antivirus kan blockera kort.</summary>
+    /// <summary>
+    /// Som ovan; <paramref name="retry"/> (t.ex. IoRetry) omsluter namnbytet, som antivirus kan blockera kort.
+    /// Windows (L11): temporärfilen skapas, kontrolleras, skrivs och döps om via ETT handtag (namnbytet sker i samma
+    /// katalog och anger bara det nya filnamnet), så ingen sökväg slås upp igen mellan kontroll och användning.
+    /// </summary>
     public static void WriteAllBytes(string path, byte[] data, Action<Action>? retry)
     {
         var p = Check(path, Access.Write, isDir: false);
-        var tmp = p + ".tmp";
-        Check(tmp, Access.Write, isDir: false);
-        File.WriteAllBytes(tmp, data);
-        void Move() => File.Move(tmp, p, overwrite: true);
-        if (retry is null) Move(); else retry(Move);
+        var (tmp, tmpScope) = CheckScoped(p + ".tmp", Access.Write, isDir: false);
+        BeforeOpen?.Invoke(tmp);
+        if (Unix)
+        {
+            File.WriteAllBytes(tmp, data);
+            void MoveUnix() => File.Move(tmp, p, overwrite: true);
+            if (retry is null) MoveUnix(); else retry(MoveUnix);
+            Check(p, Access.Write, isDir: false); // macOS: symlänkskontrollen igen efter användning (se VerifyOpened)
+            return;
+        }
+        using var h = Win.CreateFileW(tmp, Win.GenericWrite | Win.Delete | Win.FileReadAttributes, Win.FileShareRead, IntPtr.Zero,
+            Win.CreateAlways, Win.FileAttributeNormal | Win.FlagOpenReparsePoint, IntPtr.Zero);
+        if (h.IsInvalid) throw Win.LastError();
+        try
+        {
+            VerifyFinalPath(h, tmp, tmpScope);
+            if ((File.GetAttributes(h) & FileAttributes.ReparsePoint) != 0) throw new SafeFsException("reparse-point", tmp);
+        }
+        catch (SafeFsException)
+        {
+            Win.TryDeleteByHandle(h); // det vi just skapat (eller en planterad länk) tas bort – aldrig länkens mål
+            throw;
+        }
+        RandomAccess.Write(h, data, 0);
+        var name = Path.GetFileName(p);
+        void Rename() => Win.RenameByHandle(h, name, replace: true);
+        if (retry is null) Rename(); else retry(Rename);
     }
 
     public static void WriteAllText(string path, string text) => WriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(text));
 
-    public static void AppendText(string path, string text) =>
-        File.AppendAllText(Check(path, Access.Write, isDir: false), text, System.Text.Encoding.UTF8);
+    /// <summary>Lägger till text (UTF-8, BOM i en ny fil som förut). Handtaget kontrolleras innan något skrivs (L11).</summary>
+    public static void AppendText(string path, string text)
+    {
+        var (p, scope) = CheckScoped(path, Access.Write, isDir: false);
+        BeforeOpen?.Invoke(p);
+        using var h = File.OpenHandle(p, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+        VerifyOpened(h, p, scope);
+        long at = RandomAccess.GetLength(h);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+        if (at == 0) bytes = [.. System.Text.Encoding.UTF8.GetPreamble(), .. bytes];
+        RandomAccess.Write(h, bytes, at);
+    }
 
+    /// <summary>
+    /// Raderar en fil. Windows (L11): själva posten öppnas (en ev. länk, aldrig dess mål), kontrolleras och raderas via handtaget.
+    /// </summary>
     public static void DeleteFile(string path)
     {
-        var p = Check(path, Access.Write, isDir: false);
-        if (File.Exists(p)) File.Delete(p);
+        var (p, scope) = CheckScoped(path, Access.Write, isDir: false);
+        if (!File.Exists(p)) return;
+        if (Unix) { File.Delete(p); return; }
+        BeforeOpen?.Invoke(p);
+        using var h = Win.CreateFileW(p, Win.Delete | Win.FileReadAttributes, Win.FileShareAll, IntPtr.Zero, Win.OpenExisting, Win.FlagOpenReparsePoint, IntPtr.Zero);
+        if (h.IsInvalid)
+        {
+            int err = Marshal.GetLastPInvokeError();
+            if (err is Win.ErrorFileNotFound or Win.ErrorPathNotFound) return;
+            throw Win.ErrorFor(err);
+        }
+        VerifyFinalPath(h, p, scope);
+        Win.DeleteByHandle(h);
     }
 
-    public static void MoveFile(string from, string to) =>
-        File.Move(Check(from, Access.Write, isDir: false), Check(to, Access.Write, isDir: false));
+    /// <summary>Flyttar/döper om en fil. Windows (L11): källan och målkatalogen kontrolleras via handtag precis före flytten.</summary>
+    public static void MoveFile(string from, string to)
+    {
+        var (f, fScope) = CheckScoped(from, Access.Write, isDir: false);
+        var (t, tScope) = CheckScoped(to, Access.Write, isDir: false);
+        BeforeOpen?.Invoke(f);
+        if (!Unix)
+        {
+            VerifyExisting(f, fScope, linkItself: true);
+            if (Path.GetDirectoryName(t) is { } td) VerifyExisting(td, tScope, linkItself: false);
+        }
+        File.Move(f, t);
+    }
 
-    public static void CreateDirectory(string path) => Directory.CreateDirectory(Check(path, Access.Write, isDir: true));
+    /// <summary>Skapar en katalog. Windows (L11): den skapade katalogen kontrolleras via handtag efteråt.</summary>
+    public static void CreateDirectory(string path)
+    {
+        var (p, scope) = CheckScoped(path, Access.Write, isDir: true);
+        Directory.CreateDirectory(p);
+        if (!Unix) VerifyExisting(p, scope, linkItself: false);
+    }
 
+    /// <summary>Raderar en katalog rekursivt. Windows (L11): katalogen kontrolleras via handtag precis före raderingen.</summary>
     public static void DeleteDirectory(string path)
     {
-        var p = Check(path, Access.Write, isDir: true);
-        if (Directory.Exists(p)) Directory.Delete(p, recursive: true);
+        var (p, scope) = CheckScoped(path, Access.Write, isDir: true);
+        if (!Directory.Exists(p)) return;
+        BeforeOpen?.Invoke(p);
+        if (!Unix) VerifyExisting(p, scope, linkItself: false);
+        Directory.Delete(p, recursive: true);
     }
 
-    public static void MoveDirectory(string from, string to) =>
-        Directory.Move(Check(from, Access.Write, isDir: true), Check(to, Access.Write, isDir: true));
+    /// <summary>Flyttar en katalog. Windows (L11): källan och målkatalogen kontrolleras via handtag precis före flytten.</summary>
+    public static void MoveDirectory(string from, string to)
+    {
+        var (f, fScope) = CheckScoped(from, Access.Write, isDir: true);
+        var (t, tScope) = CheckScoped(to, Access.Write, isDir: true);
+        BeforeOpen?.Invoke(f);
+        if (!Unix)
+        {
+            VerifyExisting(f, fScope, linkItself: false);
+            if (Path.GetDirectoryName(t) is { } td) VerifyExisting(td, tScope, linkItself: false);
+        }
+        Directory.Move(f, t);
+    }
+
+    // ------------------------------------------------------------------ kontroll efter öppning (L11)
+
+    /// <summary>Bara för tester: anropas mellan regelkontrollen och öppningen (för att byta ut en katalog mot en länk där).</summary>
+    internal static Action<string>? BeforeOpen { get; set; }
+
+    /// <summary>
+    /// Kontrollen EFTER öppning. Windows: <see cref="VerifyFinalPath"/> (GetFinalPathNameByHandle). macOS: symlänkskontrollen
+    /// görs om efter öppningen (<see cref="RefuseReparsePoints"/>). En riktig handtag-till-sökväg-kontroll
+    /// (<c>fcntl(F_GETPATH)</c>) görs inte: <c>fcntl</c> är variadisk, och på Apple arm64 skickas variadiska argument på
+    /// stacken – ett vanligt P/Invoke-anrop lägger bufferten i fel register och kan skriva i godtyckligt minne. Det kräver
+    /// en egen signatur per arkitektur (eller en liten C-shim) och kan inte provas från Windows-byggdatorn.
+    /// </summary>
+    private static void VerifyOpened(SafeFileHandle h, string full, string scope)
+    {
+        if (Unix) { RefuseReparsePoints(full, scope); return; }
+        VerifyFinalPath(h, full, scope);
+    }
+
+    /// <summary>Windows: öppnar en befintlig fil eller katalog (bara attribut) och kontrollerar vart den faktiskt pekar.</summary>
+    /// <param name="linkItself">Öppna en ev. länk själv (radera/flytta posten) i stället för att följa den.</param>
+    private static void VerifyExisting(string full, string scope, bool linkItself)
+    {
+        using var h = Win.OpenForQuery(full, linkItself);
+        if (h.IsInvalid) throw Win.LastError();
+        VerifyFinalPath(h, full, scope);
+    }
+
+    /// <summary>
+    /// Windows (L11): sökvägen som handtaget faktiskt pekar på (GetFinalPathNameByHandle, efter alla junctions och
+    /// symlänkar) måste vara exakt det tillåtna områdets verkliga sökväg + samma relativa sökväg som kontrollerades.
+    /// Byttes en katalog ut mot en junction mellan kontrollen och öppningen pekar handtaget någon annanstans → nekas.
+    /// Både området och filen slås upp med samma flaggor (DOS-namn, annars volym-GUID), så korta 8.3-namn, subst-enheter
+    /// och mappade enheter jämförs i samma form.
+    /// </summary>
+    private static void VerifyFinalPath(SafeFileHandle h, string full, string scope)
+    {
+        // Området: en katalog (appdata, spelkatalogen …) – eller, när området är en enskild fil (exe:n), dess katalog.
+        var s = scope.TrimEnd(Sep);
+        var root = full.StartsWith(s + Sep, StringComparison.OrdinalIgnoreCase) ? s : (Path.GetDirectoryName(scope) ?? "").TrimEnd(Sep);
+        if (root.Length == 0 || !(Eq(full, root) || full.StartsWith(root + Sep, StringComparison.OrdinalIgnoreCase)))
+            throw new SafeFsException("final-path", full);
+        var rel = full[root.Length..];
+        using var rh = Win.OpenForQuery(root.Length == 2 ? root + Sep : root, linkItself: false);
+        if (rh.IsInvalid) throw new SafeFsException("final-path", full);
+        foreach (var flags in Win.FinalPathFlags)
+        {
+            var file = Win.FinalPath(h, flags);
+            var rootFinal = file is null ? null : Win.FinalPath(rh, flags);
+            if (file is null || rootFinal is null) continue;
+            if (Eq(file, rootFinal.TrimEnd(Sep) + rel)) return;
+            throw new SafeFsException("final-path", full);
+        }
+        throw new SafeFsException("final-path", full);
+    }
+
+    /// <summary>Windows-API:er för kontrollen efter öppning. Används bara när <see cref="Unix"/> är falskt.</summary>
+    private static class Win
+    {
+        public const uint GenericWrite = 0x40000000, Delete = 0x00010000, FileReadAttributes = 0x80;
+        public const uint FileShareRead = 1, FileShareAll = 1 | 2 | 4;
+        public const uint CreateAlways = 2, OpenExisting = 3;
+        public const uint FileAttributeNormal = 0x80, FlagOpenReparsePoint = 0x00200000, FlagBackupSemantics = 0x02000000;
+        public const int ErrorFileNotFound = 2, ErrorPathNotFound = 3;
+        private const int FileDispositionInfo = 4;
+
+        /// <summary>FILE_NAME_NORMALIZED + VOLUME_NAME_DOS, sedan VOLUME_NAME_GUID (volym utan enhetsbokstav), sedan FILE_NAME_OPENED.</summary>
+        public static readonly uint[] FinalPathFlags = [0x0, 0x1, 0x8];
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, [Out] char[] buffer, uint length, uint flags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle h, int infoClass, IntPtr info, uint size);
+
+        /// <summary>Öppnar fil eller katalog utan läs-/skrivrätt (bara attribut), delbar för alla.</summary>
+        public static SafeFileHandle OpenForQuery(string path, bool linkItself) =>
+            CreateFileW(path, FileReadAttributes, FileShareAll, IntPtr.Zero, OpenExisting, FlagBackupSemantics | (linkItself ? FlagOpenReparsePoint : 0), IntPtr.Zero);
+
+        /// <summary>Handtagets slutliga sökväg (som Windows returnerar den, t.ex. <c>\\?\C:\…</c>), eller null.</summary>
+        public static string? FinalPath(SafeFileHandle h, uint flags)
+        {
+            var buf = new char[512];
+            for (int i = 0; i < 3; i++)
+            {
+                uint n = GetFinalPathNameByHandleW(h, buf, (uint)buf.Length, flags);
+                if (n == 0) return null;
+                if (n < buf.Length) return new string(buf, 0, (int)n);
+                buf = new char[n + 1];
+            }
+            return null;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IoStatusBlock { public IntPtr Status; public UIntPtr Information; }
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtSetInformationFile(SafeFileHandle h, out IoStatusBlock iosb, IntPtr info, uint length, int infoClass);
+
+        [DllImport("ntdll.dll")]
+        private static extern int RtlNtStatusToDosError(int status);
+
+        private const int FileRenameInformation = 10;
+
+        /// <summary>
+        /// Döper om filen bakom handtaget till <paramref name="newName"/> i SAMMA katalog: FILE_RENAME_INFORMATION utan
+        /// RootDirectory och med bara ett filnamn – då slår I/O-hanteraren inte upp någon sökväg alls. (kernel32:s
+        /// SetFileInformationByHandle gör om ett ensamt filnamn till en sökväg relativt processens aktuella katalog, därför
+        /// NtSetInformationFile direkt.) Layout: BOOLEAN, HANDLE, ULONG, WCHAR[].
+        /// </summary>
+        public static void RenameByHandle(SafeFileHandle h, string newName, bool replace)
+        {
+            if (newName.Length == 0 || newName.IndexOfAny(['\\', '/', ':']) >= 0) throw new SafeFsException("invalid", newName);
+            int rootOff = IntPtr.Size, lenOff = rootOff + IntPtr.Size, nameOff = lenOff + 4;
+            int nameBytes = newName.Length * 2;
+            int size = Math.Max(nameOff + nameBytes + 2, nameOff + IntPtr.Size);
+            var buf = Marshal.AllocHGlobal(size);
+            try
+            {
+                Marshal.Copy(new byte[size], 0, buf, size);
+                Marshal.WriteByte(buf, 0, replace ? (byte)1 : (byte)0);
+                Marshal.WriteInt32(buf, lenOff, nameBytes);
+                Marshal.Copy(newName.ToCharArray(), 0, buf + nameOff, newName.Length);
+                int status = NtSetInformationFile(h, out _, buf, (uint)size, FileRenameInformation);
+                if (status < 0) throw ErrorFor(RtlNtStatusToDosError(status));
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        /// <summary>Markerar filen bakom handtaget för radering (FILE_DISPOSITION_INFO); den försvinner när handtaget stängs.</summary>
+        public static void DeleteByHandle(SafeFileHandle h)
+        {
+            var buf = Marshal.AllocHGlobal(4);
+            try
+            {
+                Marshal.WriteInt32(buf, 0, 1);
+                if (!SetFileInformationByHandle(h, FileDispositionInfo, buf, 1)) throw LastError();
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        public static void TryDeleteByHandle(SafeFileHandle h)
+        {
+            try { DeleteByHandle(h); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+
+        /// <summary>Senaste Win32-felet som IOException/UnauthorizedAccessException (som File.* kastar), så att IoRetry m.fl. fungerar.</summary>
+        public static Exception LastError() => ErrorFor(Marshal.GetLastPInvokeError());
+
+        public static Exception ErrorFor(int win32) =>
+            Marshal.GetExceptionForHR(unchecked((int)0x80070000 | (win32 & 0xFFFF))) is { } ex and (IOException or UnauthorizedAccessException)
+                ? ex : new IOException("win32 " + win32, unchecked((int)0x80070000 | (win32 & 0xFFFF)));
+    }
 
     /// <summary>FileSystemWatcher på en tillåten katalog (t.ex. WTF\Account) för ett filnamn.</summary>
     public static FileSystemWatcher CreateWatcher(string dir, string fileName)
@@ -664,11 +920,15 @@ public static class SafeFs
     /// </summary>
     public static IDisposable? TryLockFile(string path)
     {
-        var p = Check(path, Access.Write, isDir: false);
+        var (p, scope) = CheckScoped(path, Access.Write, isDir: false);
         if (!p.StartsWith(AppDataDir + Sep, StringComparison.OrdinalIgnoreCase)) throw new SafeFsException("not-appdata", p);
-        try { return new FileStream(p, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        FileStream fs;
+        try { fs = new FileStream(p, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
+        try { VerifyOpened(fs.SafeFileHandle, p, scope); } // L11: kontroll efter öppning
+        catch { fs.Dispose(); throw; }
+        return fs;
     }
 
     /// <summary>

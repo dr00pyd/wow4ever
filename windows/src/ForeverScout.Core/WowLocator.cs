@@ -78,6 +78,36 @@ public static class WowLocator
         catch (SafeFsException) { return false; }
     }
 
+    /// <summary>Vad appen ska göra med spelkatalogen vid start (<see cref="NextStep"/>).</summary>
+    public enum StartStep
+    {
+        /// <summary>Den sparade katalogen är vald/bekräftad av användaren – använd den.</summary>
+        Ready,
+        /// <summary>Fråga användaren om katalogen (en gång): den hittades automatiskt eller är sparad av ≤ 1.0.6.</summary>
+        Confirm,
+        /// <summary>Ingen (eller flera) kandidater och ingen katalog sparad – öppna väljaren.</summary>
+        Pick,
+        /// <summary>Inget att göra nu (t.ex. sparad katalog finns inte just nu – felet visas i status).</summary>
+        Nothing,
+    }
+
+    /// <summary>
+    /// L11: en automatiskt hittad katalog används aldrig utan att användaren bekräftat den en gång – en annan lokal
+    /// användare med skrivrätt i spelets mapp skulle annars kunna plantera en <c>_forever_</c> och få offrets nyckel att
+    /// ladda upp sin data. Ren funktion (testas); appen visar frågan och sparar svaret.
+    /// </summary>
+    /// <param name="usable">Finns katalogen och ser den ut som en spelkatalog? (<see cref="IsUsableGameDir"/>)</param>
+    /// <param name="locate">Automatisk sökning (<see cref="Locate"/>) – anropas bara när den behövs.</param>
+    public static (StartStep Step, string? Dir) NextStep(Settings s, Func<string, bool> usable, Func<List<GameDir>> locate)
+    {
+        if (!string.IsNullOrEmpty(s.GameDir) && usable(s.GameDir))
+            return s.IsGameDirConfirmed() ? (StartStep.Ready, s.GameDir) : (StartStep.Confirm, s.GameDir);
+        var best = locate().Where(d => Rank(d) == 0 && !string.Equals(d.Path, s.GameDirDeclined, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (best.Count == 1) return (StartStep.Confirm, best[0].Path);
+        // Flera eller ingen: fråga bara om ingen katalog någonsin valts (annars visas felet i status).
+        return string.IsNullOrEmpty(s.GameDir) ? (StartStep.Pick, null) : (StartStep.Nothing, null);
+    }
+
     /// <summary>Lägre = bättre: _forever_ först, sedan allt med "forever", sedan övriga.</summary>
     public static int Rank(GameDir d)
     {

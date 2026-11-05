@@ -37,6 +37,10 @@ public static class ErrorCodes
     public const string AccessDenied = "access-denied";
     public const string NotOurFile = "not-our-file";
     public const string UpdateFailed = "update-failed";
+    /// <summary>L12: servern svarade med en omdirigering (3xx). Den följs aldrig.</summary>
+    public const string Redirect = "redirect";
+    /// <summary>L10: versionsinfons signerade "issued" är äldre än den senaste vi redan sett (återspelad gammal fil).</summary>
+    public const string ReleaseStale = "release-stale";
     // macOS (client/mac)
     /// <summary>Appen körs från en tillfällig, skrivskyddad kopia (App Translocation) – flytta den till Program först.</summary>
     public const string AppTranslocated = "app-translocated";

@@ -53,9 +53,16 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
   och `WTF` direkt i den). Annars väljer du själv i Inställningar. Källor: CurseForge och Mobalytics guider för
   Forever-addons (`World of Warcraft/_forever_/Interface/AddOns`); betan låg i en egen katalog
   (`_classic_beta_`/`_forever_beta_` enligt olika källor) – sådana rankas efter `_forever_` men hittas också.
+  **Från 1.0.7** används en automatiskt hittad katalog först när du bekräftat den en gång (texten `mac.gamedir.confirm`).
+  Inställningar från 1.0.6 bekräftas också en gång.
 - Sökvägar normaliseras som rena strängar (`/` som avgränsare). `..`, relativa sökvägar, `//…`, bakstreck, jokertecken,
   NUL och resursgrenar (`fil/..namedfork/rsrc`) nekas. **Symlänkar** under de tillåtna områdena nekas (`LinkTarget`
   och `ReparsePoint`). Själva valet av spelkatalog följs en gång (t.ex. `/var` → `/private/var`).
+- **Efter öppning (1.0.7):** symlänkskontrollen görs om när filen är öppnad (läsning, tillägg, låset) och efter
+  namnbytet vid skrivning. Windows jämför handtagets verkliga sökväg (`GetFinalPathNameByHandle`); motsvarigheten på
+  macOS, `fcntl(F_GETPATH)`, används inte: `fcntl` är variadisk, och på Apple arm64 hamnar variadiska argument på
+  stacken, så ett vanligt P/Invoke-anrop skickar bufferten fel och kan skriva i godtyckligt minne. Det kräver en
+  signatur per arkitektur eller en liten C-shim och måste provas på en Mac innan det slås på.
 - **Skiftläge:** reglerna jämförs skiftlägesokänsligt, precis som på Windows (APFS är oftast skiftlägesokänsligt). På en
   skiftlägeskänslig volym betyder det bara att `foreverscout.lua` också räknas som addonens fil.
 - **Nyckeln** ligger i login-nyckelringen (tjänst `se.wow4ever.foreverscout`, konto `contributor-key`). Den skrivs med
@@ -94,6 +101,8 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
   (`tests/Compat/`) godtar en version.json med mac-fält och får samma exe, och ändrade mac-fält stoppar bara macOS.
 - macOS-klienten hämtar addonen och spärrlistan precis som Windows (signature2), men själva appen bara med signature3
   (`ReleaseVerifier.VerifyMac`, ingen reserv).
+- Från 1.0.7 gäller samma regler som på Windows: signature2 krävs, `issued` får inte gå bakåt (`ReleaseIssued` i
+  settings.json) och en spärrad addon leder aldrig till att en äldre addon installeras.
 
 Självuppdateringen (`MacBundleUpdater` i Core), när du väljer "Sök efter uppdateringar":
 1. Versionsinfon verifieras med signature3; zip:en laddas ner och kontrolleras mot `macSha256` och `macSig` (vår

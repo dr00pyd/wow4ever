@@ -25,12 +25,13 @@ public sealed class SignedRelease
     public string? Mac { get; init; }
     public ReleaseFile? MacFile { get; init; }
     public string? Issued { get; init; }
-    /// <summary>Verifierades svaret med signature2 (utökat fältset) eller bara den gamla signaturen?</summary>
+    /// <summary>Verifierades svaret med signature2 (utökat fältset)? Alltid sant från 1.0.7, som kräver signature2 (L10).</summary>
     public bool HasSignature2 { get; init; }
     /// <summary>Verifierades svaret med signature3 (alla fält inklusive mac-fälten)?</summary>
     public bool HasSignature3 { get; init; }
     /// <summary>Spärrade addonversioner. Inte signerat (servern kan lägga till via miljövariabel) – används bara
-    /// för att avgöra när en signerad addon ska hämtas, aldrig för att godta något.</summary>
+    /// för att stoppa uppladdningen och tala om det för användaren, aldrig för att godta något eller för att
+    /// installera en äldre addon (L10, se <see cref="AddonInstaller.Decide"/>).</summary>
     public IReadOnlyList<string> BlockedAddons { get; init; } = [];
 
     public ReleaseFile? File(ReleaseKind k) => k switch { ReleaseKind.Client => ClientFile, ReleaseKind.Lite => LiteFile, ReleaseKind.Mac => MacFile, _ => AddonFile };
@@ -48,8 +49,11 @@ public sealed class SignedRelease
 /// <para><b>signature2</b> (från 1.0.3) gäller samma kanoniska form men över <see cref="SignedFields2"/> = de gamla fälten
 /// plus <c>lite, liteFile, liteSha256, liteSig</c> och <c>setup, setupFile, setupSha256, setupSig</c>. Den gamla <c>signature</c> lämnas orörd så att klienter 1.0.0–1.0.2
 /// (som bara känner till <see cref="SignedFields"/>) fortsätter att verifiera och uppdatera till full-exe:n.
-/// Nya klienter: finns signature2 MÅSTE den stämma (ingen reserv till den gamla); saknas den används den gamla
-/// signaturen och lite-fälten ignoreras.</para>
+/// Från 1.0.7 (L10) KRÄVS signature2: saknas den är svaret osignerat för den här klienten (ingen reserv till den gamla).</para>
+///
+/// <para><b>issued</b> (signerat, ISO 8601 UTC från scout-sign.mjs) får aldrig gå bakåt: <see cref="AcceptIssued"/> avvisar
+/// en versionsinfo som är äldre än den senaste klienten sett, så att en gammal men korrekt signerad fil inte kan
+/// spelas upp igen (L10). Det högsta värdet sparas i settings.json (<see cref="Settings.ReleaseIssued"/>).</para>
 ///
 /// <para><b>Filsignaturen</b> (<c>clientSig</c>/<c>liteSig</c>/<c>addonSig</c>) gäller UTF-8-texten
 /// <c>"ForeverScout-file/v1\n&lt;client|lite|addon&gt;\n&lt;version&gt;\n&lt;sha256 hex gemener&gt;"</c>, så att en fil
@@ -184,25 +188,20 @@ public static partial class ReleaseVerifier
             if (root.ValueKind != JsonValueKind.Object) throw new ApiException(ErrorCodes.BadResponse);
             static string? SigOf(JsonElement r, string n) =>
                 r.TryGetProperty(n, out var e) && e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()) ? e.GetString() : null;
-            bool v2 = SigOf(root, "signature2") is not null;
             if (mac)
             {
                 // macOS: signature3 över alla fält måste finnas och stämma. Ingen reserv.
                 var s3 = SigOf(root, "signature3") ?? throw new ApiException(ErrorCodes.SignatureMissing);
                 if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields3)), s3))
                     throw new ApiException(ErrorCodes.SignatureInvalid);
-                v2 = true; // signature3 täcker alla fält i signature2
-            }
-            else if (v2)
-            {
-                // Nytt format: signature2 över det utökade fältsetet måste stämma. Ingen reserv till den gamla.
-                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields2)), SigOf(root, "signature2")))
-                    throw new ApiException(ErrorCodes.SignatureInvalid);
             }
             else
             {
-                var old = SigOf(root, "signature") ?? throw new ApiException(ErrorCodes.SignatureMissing);
-                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields)), old)) throw new ApiException(ErrorCodes.SignatureInvalid);
+                // signature2 över det utökade fältsetet måste finnas och stämma. 1.0.7 (L10): ingen reserv till den gamla
+                // signaturen – den finns kvar i filen bara för klienter 1.0.0–1.0.2.
+                var s2 = SigOf(root, "signature2") ?? throw new ApiException(ErrorCodes.SignatureMissing);
+                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields2)), s2))
+                    throw new ApiException(ErrorCodes.SignatureInvalid);
             }
 
             string? Str(string n) => root.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -233,10 +232,10 @@ public static partial class ReleaseVerifier
                 Addon = Str("addon"),
                 ClientFile = FileOf(ReleaseKind.Client, "client", "clientFile", "sha256", "clientSig"),
                 AddonFile = FileOf(ReleaseKind.Addon, "addon", "addonFile", "addonSha256", "addonSig"),
-                // Lite-fälten är bara signerade av signature2 – utan den ignoreras de.
-                Lite = v2 ? Str("lite") : null,
-                LiteFile = v2 ? FileOf(ReleaseKind.Lite, "lite", "liteFile", "liteSha256", "liteSig") : null,
-                HasSignature2 = v2,
+                // Lite-fälten är signerade av signature2 (och signature3, som täcker alla fält i signature2).
+                Lite = Str("lite"),
+                LiteFile = FileOf(ReleaseKind.Lite, "lite", "liteFile", "liteSha256", "liteSig"),
+                HasSignature2 = true,
                 // Mac-fälten är bara signerade av signature3 – utan den (Windows) ignoreras de.
                 Mac = mac ? Str("mac") : null,
                 MacFile = mac ? FileOf(ReleaseKind.Mac, "mac", "macFile", "macSha256", "macSig") : null,
@@ -245,6 +244,32 @@ public static partial class ReleaseVerifier
                 BlockedAddons = blocked,
             };
         }
+    }
+
+    /// <summary>"issued" som scout-sign.mjs skriver den (<c>new Date().toISOString()</c>, t.ex. 2026-11-05T01:08:54.179Z).</summary>
+    public static bool TryParseIssued(string? issued, out DateTimeOffset at)
+    {
+        at = default;
+        return issued is { Length: > 0 and < 40 }
+            && DateTimeOffset.TryParseExact(issued, ["yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK", "yyyy-MM-dd'T'HH:mm:ssK"],
+                System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out at);
+    }
+
+    /// <summary>
+    /// L10: släpper bara igenom en (redan signaturkontrollerad) versionsinfo vars "issued" inte är äldre än
+    /// <paramref name="highestSeen"/> – det högsta värde klienten tidigare godtagit. Samma värde godtas (samma fil
+    /// hämtas om och om igen). Returnerar det nya högsta värdet att spara. Saknas eller är "issued" ogiltig är svaret
+    /// felaktigt (scout-sign.mjs skriver alltid fältet). Ett trasigt sparat värde ignoreras.
+    /// </summary>
+    public static string AcceptIssued(string? issued, string? highestSeen)
+    {
+        if (!TryParseIssued(issued, out var at)) throw new ApiException(ErrorCodes.BadResponse, detail: "issued");
+        if (TryParseIssued(highestSeen, out var seen))
+        {
+            if (at < seen) throw new ApiException(ErrorCodes.ReleaseStale);
+            if (at == seen) return highestSeen!;
+        }
+        return issued!;
     }
 
     /// <summary>Först SHA-256 mot det signerade värdet, sedan filsignaturen. Kastar vid avvikelse.</summary>

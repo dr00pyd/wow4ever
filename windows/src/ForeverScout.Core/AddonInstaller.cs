@@ -49,6 +49,32 @@ public static class AddonInstaller
         return P(a).CompareTo(P(b));
     }
 
+    /// <summary>Vad ska göras med addonen efter en versionskontroll? Se <see cref="Decide"/>.</summary>
+    public enum UpdateAction
+    {
+        /// <summary>Inget att göra.</summary>
+        None,
+        /// <summary>Hämta och installera den signerade addonen (ingen addon finns, eller den signerade är nyare).</summary>
+        Install,
+        /// <summary>Den installerade versionen är spärrad och ingen nyare signerad finns: ladda inte upp, tala om det.</summary>
+        BlockedWaiting,
+    }
+
+    /// <summary>
+    /// L10: installera bara den signerade addonen om ingen addon finns eller om den är NYARE än den installerade.
+    /// Spärrlistan (<c>blockedAddons</c>) och serverns <c>422 addon-blocked</c> (<paramref name="alsoBlocked"/>) är inte
+    /// signerade – de får bara stoppa uppladdningen och visa ett meddelande, aldrig leda till en äldre addon. En
+    /// nedgradering skulle kräva ett signerat fält, och något sådant finns inte i versionsinfon (1.0.7).
+    /// </summary>
+    public static UpdateAction Decide(string? installed, SignedRelease release, IEnumerable<string>? alsoBlocked = null)
+    {
+        bool releaseUsable = release.AddonFile is not null && !release.IsAddonBlocked(release.Addon);
+        if (releaseUsable && (installed is null || CompareVersions(release.Addon, installed) > 0)) return UpdateAction.Install;
+        bool installedBlocked = installed is not null
+            && (release.IsAddonBlocked(installed) || (alsoBlocked?.Contains(installed, StringComparer.Ordinal) ?? false));
+        return installedBlocked ? UpdateAction.BlockedWaiting : UpdateAction.None;
+    }
+
     /// <summary>Behöver addonen installeras eller uppdateras?</summary>
     public static bool NeedsInstall(GameDir dir, IReadOnlyList<AddonFile> files) =>
         files.Count > 0 && (InstalledVersion(dir) is not { } inst || CompareVersions(BundledVersion(files), inst) > 0);

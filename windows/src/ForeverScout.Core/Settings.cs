@@ -59,8 +59,43 @@ public sealed class Settings
     public int? AcceptedTotal { get; set; }
     public int? ConfirmedTotal { get; set; }
     public List<ConfirmedItem> LastConfirmed { get; set; } = new();
+    /// <summary>L10: högsta signerade "issued" i en godtagen versionsinfo. Äldre versionsinfo avvisas (ingen återuppspelning).</summary>
+    public string? ReleaseIssued { get; set; }
+    /// <summary>
+    /// L11: den spelkatalog som användaren valt eller bekräftat. En automatiskt hittad katalog används först när den
+    /// bekräftats (en gång). Null i inställningar från ≤ 1.0.6 – då frågar 1.0.7 en gång.
+    /// </summary>
+    public string? GameDirConfirmed { get; set; }
+    /// <summary>L11: en automatiskt hittad katalog som användaren svarat Nej på – den föreslås inte igen.</summary>
+    public string? GameDirDeclined { get; set; }
 
     [JsonIgnore] public string FilePath { get; private set; } = "";
+
+    /// <summary>Är den sparade spelkatalogen vald eller bekräftad av användaren?</summary>
+    public bool IsGameDirConfirmed() =>
+        !string.IsNullOrEmpty(GameDir) && string.Equals(GameDir, GameDirConfirmed, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Användaren har valt (Inställningar) eller bekräftat (frågan) <see cref="GameDir"/>.</summary>
+    public void ConfirmGameDir()
+    {
+        GameDirConfirmed = GameDir;
+        if (string.Equals(GameDirDeclined, GameDir, StringComparison.OrdinalIgnoreCase)) GameDirDeclined = null;
+    }
+
+    /// <summary>
+    /// L10: godkänner en (signaturkontrollerad) versionsinfo bara om dess "issued" inte är äldre än den senaste vi sett,
+    /// och sparar det nya högsta värdet. Kastar <see cref="ApiException"/> (release-stale) annars.
+    /// </summary>
+    public SignedRelease AcceptRelease(SignedRelease release)
+    {
+        var highest = ReleaseVerifier.AcceptIssued(release.Issued, ReleaseIssued);
+        if (!string.Equals(highest, ReleaseIssued, StringComparison.Ordinal))
+        {
+            ReleaseIssued = highest;
+            Save();
+        }
+        return release;
+    }
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 

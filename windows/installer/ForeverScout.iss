@@ -6,7 +6,8 @@
 ; - Installeras per användare utan admin i %LOCALAPPDATA%\Programs\Forever Scout (självuppdateringen fungerar då utan UAC).
 ; - Innehåller lite-exe:n (ramverksberoende). Saknas .NET 10 Desktop Runtime erbjuds att hämta Microsofts officiella
 ;   installationsprogram över HTTPS (aka.ms → builds.dotnet.microsoft.com) – det steget ber om UAC, och användaren får
-;   veta det innan. Avböjer man visas länken.
+;   veta det innan. Avböjer man visas länken. Filen startas bara om dess Authenticode-signatur är giltig och kommer från
+;   Microsoft Corporation (M7); annars öppnas Microsofts nedladdningssida i stället.
 ; - Fast AppId: nya versioner uppgraderar på plats. En körande Forever Scout stängs före installationen.
 ; - Avinstalleraren tar bort exe, genvägar och autostartvärdet, och frågar (standard Nej) om %APPDATA%\ForeverScout också ska bort.
 
@@ -79,6 +80,8 @@ swedish.RuntimeManual=Installera .NET 10 Desktop Runtime (Windows x64) själv fr
 english.RuntimeManual=Please install .NET 10 Desktop Runtime (Windows x64) from Microsoft before starting Forever Scout:%n%n%1%n%nOpen the page now?
 swedish.RuntimeFailed=Installationen av .NET 10 Desktop Runtime avbröts eller misslyckades (kod %1).
 english.RuntimeFailed=Installing .NET 10 Desktop Runtime was cancelled or failed (code %1).
+swedish.RuntimeUnsigned=Det hämtade installationsprogrammet för .NET 10 Desktop Runtime har ingen giltig signatur från Microsoft och startas därför inte.%n%nMicrosofts nedladdningssida öppnas i stället – installera .NET 10 Desktop Runtime (Windows x64) därifrån innan du startar Forever Scout.
+english.RuntimeUnsigned=The downloaded .NET 10 Desktop Runtime installer does not have a valid Microsoft signature, so it will not be started.%n%nMicrosoft's download page opens instead – install .NET 10 Desktop Runtime (Windows x64) from there before starting Forever Scout.
 swedish.RuntimeDownloading=Hämtar .NET 10 Desktop Runtime från Microsoft …
 english.RuntimeDownloading=Downloading .NET 10 Desktop Runtime from Microsoft …
 swedish.UninstallData=Vill du även ta bort Forever Scouts inställningar, nyckel och logg (%APPDATA%\ForeverScout)?%n%nVälj Nej om du vill behålla dem till en senare installation.
@@ -176,17 +179,57 @@ begin
   end;
 end;
 
+{ M7: är filen signerad av Microsoft? Get-AuthenticodeSignature (PowerShell 5.1, finns i alla Windows 10/11) måste ge
+  Status = Valid (kedjan till en betrodd rot, inte återkallad, filen orörd), och både certifikatets ägare och utfärdare
+  ska ha O=Microsoft Corporation (dagens runtime: "CN=.NET, O=Microsoft Corporation, …", utfärdad av "Microsoft Code
+  Signing PCA 2024, O=Microsoft Corporation"). Allt annat – även att PowerShell saknas eller blockeras – räknas som nej. }
+function RuntimeSignedByMicrosoft(const FileName: String): Boolean;
+var
+  Code: Integer;
+  P, Script: String;
+begin
+  Result := False;
+  P := FileName;
+  StringChangeEx(P, '''', '''''', True); { enkelfnutt i sökvägen (t.ex. O'Brien) dubbleras för PowerShell }
+  Script := '$s = Get-AuthenticodeSignature -LiteralPath ''' + P + '''; ' +
+    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -match ''(^|, )O=Microsoft Corporation(,|$)'' ' +
+    '-and $s.SignerCertificate.Issuer -match ''(^|, )O=Microsoft Corporation(,|$)'') { exit 0 } else { exit 1 }';
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+          '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"',
+          '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := (Code = 0);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
+  Lock: TFileStream;
 begin
   if (CurStep = ssPostInstall) and WantRuntime and (RuntimeFile <> '') then
   begin
-    { Microsofts eget, signerade installationsprogram – kräver admin (UAC). }
-    if not ShellExec('runas', RuntimeFile, '/install /passive /norestart', '', SW_SHOWNORMAL, ewWaitUntilTerminated, Code) or ((Code <> 0) and (Code <> 3010)) then
-    begin
-      SuppressibleMsgBox(FmtMessage(CustomMessage('RuntimeFailed'), [IntToStr(Code)]), mbError, MB_OK, IDOK);
-      OfferManualRuntime();
+    { M7: filen ligger i Setups tillfälliga katalog, som användarens egna processer kan skriva i. Den hålls öppen med skrivskydd
+      (fmShareDenyWrite: kan inte ändras, döpas om eller raderas) från signaturkontrollen tills installationen är klar. }
+    Lock := nil;
+    try
+      try
+        Lock := TFileStream.Create(RuntimeFile, fmOpenRead or fmShareDenyWrite);
+      except
+        Lock := nil;
+      end;
+      if (Lock = nil) or (not RuntimeSignedByMicrosoft(RuntimeFile)) then
+      begin
+        { Ingen giltig Microsoft-signatur: kör den inte – öppna Microsofts nedladdningssida i stället. }
+        SuppressibleMsgBox(CustomMessage('RuntimeUnsigned'), mbError, MB_OK, IDOK);
+        ShellExecAsOriginalUser('open', RuntimePage, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+      end
+      { Microsofts eget, signerade installationsprogram – kräver admin (UAC). }
+      else if not ShellExec('runas', RuntimeFile, '/install /passive /norestart', '', SW_SHOWNORMAL, ewWaitUntilTerminated, Code) or ((Code <> 0) and (Code <> 3010)) then
+      begin
+        SuppressibleMsgBox(FmtMessage(CustomMessage('RuntimeFailed'), [IntToStr(Code)]), mbError, MB_OK, IDOK);
+        OfferManualRuntime();
+      end;
+    finally
+      if Lock <> nil then Lock.Free;
     end;
   end;
 end;
