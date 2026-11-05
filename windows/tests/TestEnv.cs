@@ -20,4 +20,25 @@ internal static class TestEnv
 
     /// <summary>Temporär katalog (utanför appdata) som tas bort efteråt.</summary>
     public static DirectoryInfo Temp(string prefix) => Directory.CreateTempSubdirectory(prefix);
+
+#if DEBUG
+    internal const bool IsDebug = true;
+#else
+    internal const bool IsDebug = false;
+#endif
+    internal const string ReleaseSkip = "kräver Debug: i Release ignorerar ApiClient baseUrl och pratar bara med produktionen";
+}
+
+/// <summary>
+/// Tester mot en lokal server (127.0.0.1). Bara i Debug – i Release pekar ApiClient alltid på guide.wow4ever.se,
+/// och testet skulle då nå den riktiga sajten (build.sh på macOS kör testerna i Release).
+/// </summary>
+public sealed class DebugFactAttribute : FactAttribute
+{
+    public DebugFactAttribute() { if (!TestEnv.IsDebug) Skip = TestEnv.ReleaseSkip; }
+}
+
+public sealed class DebugTheoryAttribute : TheoryAttribute
+{
+    public DebugTheoryAttribute() { if (!TestEnv.IsDebug) Skip = TestEnv.ReleaseSkip; }
 }

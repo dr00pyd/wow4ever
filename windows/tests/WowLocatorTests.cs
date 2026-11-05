@@ -92,7 +92,7 @@ public sealed class WowLocatorTests : IDisposable
         Assert.DoesNotContain("MYACCOUNT", Privacy.FileKey(@"C:\WTF\Account\MYACCOUNT\x.lua"));
     }
 
-    [Fact]
+    [DebugFact]
     public void BaseUrlOnlyHttpsOrLoopbackInDebug()
     {
         Assert.Equal("https://guide.wow4ever.se/", ApiClient.ResolveBaseUri(null).ToString());

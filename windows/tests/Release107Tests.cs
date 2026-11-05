@@ -204,7 +204,8 @@ public sealed class Release107Tests : IDisposable
         Assert.True(again.IsGameDirConfirmed());
         Assert.Equal(Other.Path, again.GameDirDeclined);
         // settings.json från 1.0.6 (utan de nya fälten) läses som obekräftad.
-        SafeFs.WriteAllText(Path.Combine(dir, "settings.json"), "{\"GameDir\":\"C:\\\\Games\\\\World of Warcraft\\\\_forever_\"}");
+        // SafeFs.AppDataDir (inte dir): på macOS är /var/folders/… egentligen /private/var/folders/….
+        SafeFs.WriteAllText(Path.Combine(SafeFs.AppDataDir, "settings.json"),"{\"GameDir\":\"C:\\\\Games\\\\World of Warcraft\\\\_forever_\"}");
         var legacy = Settings.Load(dir);
         Assert.Equal(Forever.Path, legacy.GameDir);
         Assert.False(legacy.IsGameDirConfirmed());
@@ -213,7 +214,7 @@ public sealed class Release107Tests : IDisposable
 
     // ---------------------------------------------------------------- L12: omdirigeringar följs aldrig
 
-    [Fact]
+    [DebugFact]
     public async Task L12_UploadIsNeverReSentToTheRedirectTarget()
     {
         using var srv = new RedirectServer(307);
@@ -227,7 +228,7 @@ public sealed class Release107Tests : IDisposable
         Assert.Equal(0, srv.Hits("/elsewhere")); // POST-kroppen skickades aldrig vidare
     }
 
-    [Theory]
+    [DebugTheory]
     [InlineData(301)]
     [InlineData(302)]
     [InlineData(308)]
