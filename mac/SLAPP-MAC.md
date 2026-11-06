@@ -1,8 +1,35 @@
 # Släppa Forever Scout för Mac
 
-Gör det här på MacBooken i **Terminal**. Kopiera ett block i taget. Allt tar ungefär 15–30 minuter, och nästan all tid går till att vänta på Apples notarisering.
+## Det enda du behöver skriva
 
-Det du behövde ställa in en gång finns redan: Xcode-verktygen, .NET 10, nyckelringen `forever-scout.keychain-db` med ditt Developer ID och notarieprofilen `forever-scout`.
+Öppna **Terminal** på MacBooken och klistra in:
+
+```bash
+cd ~/wow4ever && git pull && bash mac/release.sh
+```
+
+Skriptet gör allt: låser upp nyckelringen, bygger, signerar, notariserar hos Apple, gör zip och DMG, kontrollerar
+dem och skickar båda filerna till servern. Det tar 15–30 minuter, mest väntan på Apple. Låt Terminal vara.
+
+Det frågar efter:
+- **Serverns adress, bara första gången:** skriv serverns adress som `användare@ip`. Den sparas på Macen i `~/.config/forever-scout/release.conf`.
+- **Nyckelringens lösenord.**
+- **Serverns lösenord** när filerna skickas.
+- **Första gången:** om Terminal får styra Finder. Svara **OK**; det ger DMG-fönstret vår bakgrund.
+
+När det står **"Klart! Mac 1.0.9 ligger på servern"** skriver du det till Claude. Claude gör resten.
+
+**Inte hemma?** Om skicket misslyckas skriver skriptet vad du gör. Kör sedan hemifrån utan att bygga om:
+
+```bash
+cd ~/wow4ever && bash mac/release.sh --bara-skicka
+```
+
+---
+
+## Samma sak för hand, steg för steg
+
+Behövs bara om skriptet krånglar.
 
 ## 1. Hämta den senaste koden
 
