@@ -2,27 +2,27 @@
 
 ## Det enda du behöver skriva
 
-Öppna **Terminal** på MacBooken och klistra in:
+Öppna **Terminal** på MacBooken och klistra in hela raden:
 
 ```bash
-cd ~/wow4ever && git pull && bash mac/release.sh
+cd ~/wow4ever && git pull && bash mac/release.sh --server <användare>@<server>
 ```
 
-Skriptet gör allt: låser upp nyckelringen, bygger, signerar, notariserar hos Apple, gör zip och DMG, kontrollerar
-dem och skickar båda filerna till servern. Det tar 15–30 minuter, mest väntan på Apple. Låt Terminal vara.
+Skriptet gör allt: bygger, signerar, notariserar hos Apple, gör zip och DMG, kontrollerar dem och skickar båda
+filerna till servern. Det tar 15–30 minuter, mest väntan på Apple. Låt Terminal vara.
 
-Det frågar efter:
-- **Serverns adress, bara första gången:** skriv serverns adress som `användare@ip`. Den sparas på Macen i `~/.config/forever-scout/release.conf`.
-- **Nyckelringens lösenord.**
-- **Serverns lösenord** när filerna skickas.
-- **Första gången:** om Terminal får styra Finder. Svara **OK**; det ger DMG-fönstret vår bakgrund.
+Du skriver bara två lösenord:
+1. **Nyckelringens lösenord**, direkt i början.
+2. **Serverns lösenord**, när filerna skickas i slutet.
+
+Första gången frågar macOS också om Terminal får styra Finder. Svara **OK**; det ger DMG-fönstret vår bakgrund.
 
 När det står **"Klart! Mac 1.0.9 ligger på servern"** skriver du det till Claude. Claude gör resten.
 
 **Inte hemma?** Om skicket misslyckas skriver skriptet vad du gör. Kör sedan hemifrån utan att bygga om:
 
 ```bash
-cd ~/wow4ever && bash mac/release.sh --bara-skicka
+cd ~/wow4ever && bash mac/release.sh --bara-skicka --server <användare>@<server>
 ```
 
 ---
