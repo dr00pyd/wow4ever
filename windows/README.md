@@ -29,10 +29,11 @@ flytta – bara addonens och självuppdateringens fasta namn) kontrolleras via h
 |---|---|
 | `Interface\AddOns\ForeverScout\**` (+ `ForeverScout.new`/`.old` under bytet) | läsa/skriva (installera addonen) |
 | `WTF\Account\*\SavedVariables\ForeverScout.lua` | läsa (det som laddas upp) |
+| `WTF\Account\*\SavedVariables\Auctionator.lua`, `…\Auc-Stat-Simple.lua` | läsa, **bara** när "Dela auktionspriser" är på (av som standard). Filen skickas aldrig, bara föremål, realm/fraktion, dag, lägsta pris per styck och antal |
 | `Cache\ADB\*\DBCache.bin` | läsa (hotfix-cachen) |
 | `Interface`, `Interface\AddOns`, `WTF`, `WTF\Account`, `WTF\Account\*`, `…\SavedVariables`, `Cache`, `Cache\ADB`, `Cache\ADB\*` | bara existens och kataloglistning, för att hitta filerna ovan |
 
-Andra filer i WoW-katalogen nekas, till exempel andra addons SavedVariables, `Config.wtf`, `config-cache.wtf` och `Wow.exe`.
+Andra filer i WoW-katalogen nekas, till exempel andra addons SavedVariables (de två auktionsfilerna ovan när delningen är av, och Auctioneers `Auc-ScanData.lua` med säljarnamn alltid), `Config.wtf`, `config-cache.wtf` och `Wow.exe`.
 
 **När WoW-katalogen ska hittas** gäller bara existens, inget innehåll: standardsökvägarna
 (`Program Files (x86)\World of Warcraft`, `Program Files\World of Warcraft`, `<enhet>:\World of Warcraft`,
@@ -61,6 +62,7 @@ Dessutom rör appen den egna exe:n och `ForeverScout.new.exe`/`.old.exe` bredvid
   `{ platform: "windows", version }` och sedan den hemliga `deviceCode` var `interval`:e sekund – ingen nyckel, inget
   om datorn)
 - `POST /api/bidrag/ladda-upp`, `POST /api/bidrag/hotfix`
+- `POST /api/bidrag/auktioner` (bara när "Dela auktionspriser" är på)
 - `GET /api/bidrag/jag`, `GET /api/bidrag/version`
 - `GET /scout/<signerad fil>`
 
@@ -72,6 +74,8 @@ global, `ForeverScoutDB`, annars vägras den. Den måste också gå att parsa he
 skriver klart. Fönstret **Visa vad som skickas** (kugghjulet och fältmenyn) visar exakt innehåll, sha256 och om filen
 redan är skickad. Varje anrop loggas i `%APPDATA%\ForeverScout\uploads.log` med tid, typ, storlek, sha256 och svar.
 Knappen **Öppna logg** finns i Inställningar.
+
+**Auktionspriser (opt-in).** Kryssrutan *Dela auktionspriser (Auctionator/Auctioneer)* i Inställningar är av som standard. När den är på läser appen auktionsaddonens prisfil i samma SavedVariables-katalog. Själva filen skickas aldrig, bara JSON-rader med föremål, realm, fraktion, dag, lägsta utköpspris per styck i koppar och antal. Säljarnamn, karaktärer, inköpslistor, inställningar, säljhistorik och klockslag skickas inte. Bara dagar från förra uppladdningen och framåt skickas, högst 30 dagar bakåt. *Visa vad som skickas* visar raderna, och `uploads.log` loggar varje anrop (`auktioner`). Format och källor står i `docs/SCOUT.md`, avsnittet "Auktionspriser".
 
 ## Vad den gör
 - WoW-katalogen hittas via registrets `InstallPath` (föräldern och `_forever_` testas) eller standardsökvägar.

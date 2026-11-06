@@ -6,12 +6,13 @@
 --  * Midnight/Forever "secret values": every value read from the game passes clean() before it is
 --    compared or stored. Secret = treated as missing.
 --  * No OnUpdate. Work happens only on interaction events; re-scans are debounced with C_Timer.
---  * Never stored: character name, realm, account, full GUIDs (only the creature/object id, field 6).
---    Nothing about other players: target/mouseover only records creatures that no player controls.
+--  * Never stored: character name, realm, account, full GUIDs (only the creature/object id, field 6, and from
+--    1.0.5 a short non-reversible tag of a corpse GUID, see guidTag). Nothing about other players: target/mouseover
+--    only records creatures that no player controls.
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.4"
+local VERSION = "1.0.5"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -28,6 +29,15 @@ local MOB_REPEAT = 120        -- seconds before the same GUID is looked at again
 local MOB_GUIDS = 2000        -- remembered GUIDs before the memory is cleared
 local MAX_MAIL = 300          -- mailbox spots, oldest dropped
 local MAIL_RADIUS = 1         -- map-% : a mailbox this close to a saved one (same map) is the same mailbox
+-- 1.0.5
+local MAX_KILLS = 3000        -- kill rows, oldest dropped
+local KILL_LOOT_DELAY = 1     -- seconds after a kill before CanLootUnit is asked (the corpse's loot is ready then)
+local MOB_EXACT = 8           -- exact spots per mob (player within interact distance of it)
+local EXACT_RADIUS = 1        -- map-% : an exact spot this close to a saved one (same map) is the same spot
+local ENC_WINDOW = 300        -- seconds after a won ENCOUNTER_END a loot window with hidden sources may be the boss
+local MAX_LATENCY = 300       -- ms : loot is not recorded above this (slot and source data can be stale)
+local DRUNK_MAX = 900         -- seconds a "you feel drunk" message is trusted without a "sober again"
+local TAG_SALT = "ForeverScout-1.0.5|"  -- per-version salt for guidTag (the tag is never the GUID)
 
 local floor, abs, type, tonumber, tostring, pairs, ipairs, select, pcall =
       math.floor, math.abs, type, tonumber, tostring, pairs, ipairs, select, pcall
@@ -37,7 +47,14 @@ local opt                     -- = ForeverScoutOpt (per character, never uploade
 local session = {
   errors = 0, lastError = nil,
   looted = {},                -- "<source GUID>|<src>" looted this session (memory only, never saved)
-  gather = nil,               -- { kind = "skin"|"mine"|"herb"|"fish", at = GetTime(), cast = castGUID } from UNIT_SPELLCAST_SUCCEEDED
+  gather = nil,               -- { kind = "skin"|"mine"|"herb"|"fish"|"pick"|"dis", at = GetTime(), cast = castGUID } from UNIT_SPELLCAST_SUCCEEDED
+  disItem = nil,              -- item id being disenchanted (UNIT_SPELLCAST_SENT), for a destroyed item's loot window
+  alive = {}, killed = {}, killN = 0, -- GUID -> true: seen alive as target / counted as a kill (memory only, never saved)
+  mobNear = {},               -- GUID -> true: an exact spot was tried for this mob (memory only)
+  softSeen = {}, softN = 0,   -- GUID -> GetTime() of the last soft-interact look at an object (memory only)
+  encounter = nil,            -- { id, name, at } of the last won ENCOUNTER_END (memory only; the name is never saved)
+  drunkAt = nil,              -- GetTime() of the last "you feel drunk" system message
+  vendorScans = 0, vendorQuietUntil = 0, vendorRR = nil,
   objPending = {},            -- questID -> retries left, for objectives that arrived without an item name
   objQueued = false,
   lastKind = nil, lastName = nil, lastTime = nil,
@@ -116,6 +133,58 @@ local function itemIdFromLink(link)
   link = str(link)
   if not link then return nil end
   return tonumber(link:match("item:(%d+)"))
+end
+
+-- 1.0.5: random suffix id of an item link ("item:id:enchant:gem1:gem2:gem3:gem4:suffix:unique:…" – field 7).
+-- Only the suffix is read; the unique id (field 8) identifies one copy of the item and is never touched.
+local function suffixFromLink(link)
+  link = str(link)
+  local body = link and link:match("item:([%-%d:]*)")
+  if not body then return nil end
+  local i = 0
+  for f in (body .. ":"):gmatch("([^:]*):") do
+    i = i + 1
+    if i == 7 then
+      local s = tonumber(f)
+      if s and s ~= 0 then return s end
+      return nil
+    end
+  end
+  return nil
+end
+
+-- 1.0.5: a short tag for a corpse/chest GUID, so that the server can count one corpse once when every group member
+-- uploads it. 32-bit polynomial hash of a per-version salt + the GUID, as 8 hex digits. The GUID carries far more
+-- than 32 bits (server, instance, zone and spawn uid), so countless GUIDs share each tag: it cannot be turned back
+-- into the GUID. The GUID itself is never saved.
+local function guidTag(g)
+  g = str(g)
+  if not g then return nil end
+  local s = TAG_SALT .. g
+  local h = 5381
+  for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+  return string.format("%08x", h)
+end
+
+-- In a party or raid? (IsInGroup on Mainline, the party/raid counters on older clients.) Unknown = false.
+local function inGroup()
+  if IsInGroup then return unitFlag(IsInGroup) == true end
+  local n = num(try(GetNumGroupMembers)) or ((num(try(GetNumPartyMembers)) or 0) + (num(try(GetNumRaidMembers)) or 0))
+  return n > 0
+end
+
+-- Latency above MAX_LATENCY ms (home or world)? Then loot slots can still show stale data – the window is skipped.
+local function laggy()
+  local _, _, home, world = try(GetNetStats)
+  home, world = num(home) or 0, num(world) or 0
+  return home > MAX_LATENCY or world > MAX_LATENCY
+end
+
+-- Drunk (a "you feel tipsy/drunk/smashed" system message in the last DRUNK_MAX seconds, no "sober again" since)?
+-- Being drunk changes the levels the client shows, so no level is recorded then.
+local function drunk()
+  local at = session.drunkAt
+  return at ~= nil and (num(try(GetTime)) or 0) - at < DRUNK_MAX
 end
 
 local function splitGuid(g)
@@ -245,6 +314,28 @@ local function subtitle(unit)
   return txt
 end
 
+-- 1.0.5: max health and max mana per level (rec.hp / rec.mp = { [level] = value }). Nothing when the level is
+-- unknown, a value is secret or the player is drunk. rec.hq = seq of the last change, so the change is uploaded.
+local function noteStats(rec, unit, l)
+  if not l or l < 1 or drunk() then return false end
+  local changed = false
+  local hp = num(try(UnitHealthMax, unit))
+  -- A health shown as a percentage (exactly 100 above level 5) is not the real value.
+  if hp and hp > 0 and hp < 10000000 and not (hp == 100 and l > 5) then
+    rec.hp = rec.hp or {}
+    if rec.hp[l] ~= hp then rec.hp[l] = hp; changed = true end
+  end
+  if num(try(UnitPowerType, unit)) == 0 then   -- mana only (rage/energy maxima say nothing about the NPC)
+    local mp = num(try(UnitPowerMax, unit, 0))
+    if mp and mp > 0 and mp < 10000000 then
+      rec.mp = rec.mp or {}
+      if rec.mp[l] ~= mp then rec.mp[l] = mp; changed = true end
+    end
+  end
+  if changed then rec.hq = nextSeq() end
+  return changed
+end
+
 local function noteObject(id, name)
   local rec = db.objects[id]
   if not rec then rec = {}; db.objects[id] = rec end
@@ -263,8 +354,9 @@ local function noteUnit(unit, roles)
     rec.n = str(try(UnitName, unit)) or rec.n
     local s = subtitle(unit)
     if s then rec.s = s end
-    local l = num(try(UnitLevel, unit))
+    local l = not drunk() and num(try(UnitLevel, unit)) or nil
     if l and l > 0 then rec.l = l end
+    noteStats(rec, unit, l)
     rec.r = reactionWord(try(UnitReaction, unit, "player")) or rec.r
     rec.pf = str(try(UnitFactionGroup, "player")) or rec.pf
     rec.roles = rec.roles or {}
@@ -313,63 +405,91 @@ end
 -- Vendors
 ---------------------------------------------------------------------------
 
+-- Alternative cost as one compact, sorted string (1.0.5; 1.0.4 saved a table the server could not read):
+-- "<itemId>:<count>" for an item, "c<currencyId>:<count>" for a currency, comma-separated, e.g. "c392:10,20558:3".
 local function costList(i)
   local n = num(try(GetMerchantItemCostInfo, i)) or 0
   if n <= 0 then return nil end
-  local ext = {}
+  local parts = {}
   for j = 1, n do
     local _, value, link = try(GetMerchantItemCostItem, i, j)
     link = str(link)
     value = num(value)
-    if link and value then
+    if link and value and value > 0 then
       local item = tonumber(link:match("item:(%d+)"))
       local cur = tonumber(link:match("currency:(%d+)"))
-      if item then ext[#ext + 1] = { item = item, c = value }
-      elseif cur then ext[#ext + 1] = { currency = cur, c = value } end
+      if item then parts[#parts + 1] = item .. ":" .. floor(value)
+      elseif cur then parts[#parts + 1] = "c" .. cur .. ":" .. floor(value) end
     end
   end
-  if #ext == 0 then return nil end
-  return ext
+  if #parts == 0 then return nil end
+  table.sort(parts)
+  return table.concat(parts, ",")
+end
+
+-- 1.0.5: shows every item (Mainline's merchant filter, LE_LOOT_FILTER_ALL) while fn runs, then restores the
+-- player's filter. Our own filter changes fire MERCHANT_UPDATE; those are ignored (vendorQuietUntil).
+local function withAllMerchantItems(fn)
+  local all = type(LE_LOOT_FILTER_ALL) == "number" and LE_LOOT_FILTER_ALL or nil
+  local saved = all and GetMerchantFilter and SetMerchantFilter and num(try(GetMerchantFilter)) or nil
+  if saved == all then saved = nil end
+  if saved then
+    session.vendorQuietUntil = (num(try(GetTime)) or 0) + 1
+    try(SetMerchantFilter, all)
+  end
+  try(fn)
+  if saved then
+    try(SetMerchantFilter, saved)
+    session.vendorQuietUntil = (num(try(GetTime)) or 0) + 1
+  end
 end
 
 local function scanVendor()
   local id = session.vendorId
   if not id then return end
-  local n = num(try(GetMerchantNumItems)) or 0
   local items = {}
-  for i = 1, n do
-    local itemId = num(try(GetMerchantItemID, i)) or itemIdFromLink(try(GetMerchantItemLink, i))
-    if itemId then
-      local price, qty, avail, hasExt
-      local info = C_MerchantFrame and try(C_MerchantFrame.GetItemInfo, i)
-      if type(info) == "table" then
-        price, qty, avail, hasExt = num(info.price), num(info.stackCount), num(info.numAvailable), clean(info.hasExtendedCost)
-      else
-        local _, _, p, q, a, _, _, e = try(GetMerchantItemInfo, i)
-        price, qty, avail, hasExt = num(p), num(q), num(a), clean(e)
+  withAllMerchantItems(function()
+    local n = num(try(GetMerchantNumItems)) or 0
+    for i = 1, n do
+      local itemId = num(try(GetMerchantItemID, i)) or itemIdFromLink(try(GetMerchantItemLink, i))
+      if itemId then
+        local price, qty, avail, hasExt
+        local info = C_MerchantFrame and try(C_MerchantFrame.GetItemInfo, i)
+        if type(info) == "table" then
+          price, qty, avail, hasExt = num(info.price), num(info.stackCount), num(info.numAvailable), clean(info.hasExtendedCost)
+        else
+          local _, _, p, q, a, _, _, e = try(GetMerchantItemInfo, i)
+          price, qty, avail, hasExt = num(p), num(q), num(a), clean(e)
+        end
+        local row = { id = itemId, price = price or 0, qty = qty or 1, limited = (avail and avail >= 0) and avail or -1 }
+        if hasExt then row.ext = costList(i) end
+        items[#items + 1] = row
       end
-      local row = { id = itemId, price = price or 0, qty = qty or 1, limited = (avail and avail >= 0) and avail or -1 }
-      if hasExt then row.ext = costList(i) end
-      items[#items + 1] = row
     end
-  end
+  end)
   if #items == 0 then return end
   local old = db.vendors[id]
-  local sig = signature(items, { "id", "price", "qty", "ext" })
+  local sig = signature(items, { "id", "price", "qty", "ext" }) .. "|" .. tostring(session.vendorRR)
   if old and old.items then
     -- Never replace a fuller list with one that is still loading.
     if #items < #old.items and now() - (old.t or 0) < 7 * 86400 then return end
-    if signature(old.items, { "id", "price", "qty", "ext" }) == sig then return end
+    if signature(old.items, { "id", "price", "qty", "ext" }) .. "|" .. tostring(old.rr) == sig then return end
   end
-  db.vendors[id] = { q = nextSeq(), t = now(), items = items }
+  -- rr = the vendor's UnitReaction toward the player (1–8; 6+ = honored or better, prices may carry a reputation
+  -- discount). The server prefers prices seen without a discount.
+  db.vendors[id] = { q = nextSeq(), t = now(), rr = session.vendorRR, items = items }
   touch("vendor", (db.npcs[id] and db.npcs[id].n) or tostring(id))
 end
 
 local vendorPending = false
 local function queueVendorScan()
-  if vendorPending then return end
+  if vendorPending or session.vendorScans >= 6 then return end
   vendorPending = true
-  after(0.5, function() vendorPending = false; scanVendor() end)
+  after(0.5, function()
+    vendorPending = false
+    session.vendorScans = session.vendorScans + 1
+    scanVendor()
+  end)
 end
 
 local function onMerchantShow()
@@ -377,6 +497,14 @@ local function onMerchantShow()
   if clean(try(CanMerchantRepair)) then roles.repair = true end
   local kind, id = noteUnit("npc", roles)
   session.vendorId = (kind == "npc") and id or nil
+  session.vendorRR = num(try(UnitReaction, "npc", "player"))
+  session.vendorScans = 0
+  queueVendorScan()
+end
+
+local function onMerchantUpdate()
+  if not session.vendorId then return end
+  if (num(try(GetTime)) or 0) < session.vendorQuietUntil then return end
   queueVendorScan()
 end
 
@@ -499,6 +627,10 @@ local function questRewards()
   end
   r.money = num(try(GetRewardMoney)) or 0
   r.xp = num(try(GetRewardXP)) or 0
+  -- 1.0.5: XP and money depend on the player's level (less XP far above the quest, money instead of XP at the
+  -- level cap) – the level is saved with them so the server can keep the representative values.
+  local pl = num(try(UnitLevel, "player"))
+  if pl and pl > 0 then r.pl = pl end
   return r
 end
 
@@ -509,7 +641,7 @@ local function questSig(rec)
     tostring(g.npc), tostring(g.object), tostring(e.npc), tostring(e.object),
     tostring(rec.m), tostring(rec.x), tostring(rec.y),
     table.concat(rec.objectives or {}, "|"),
-    table.concat(rw.items or {}, ","), table.concat(rw.choice or {}, ","), tostring(rw.money), tostring(rw.xp),
+    table.concat(rw.items or {}, ","), table.concat(rw.choice or {}, ","), tostring(rw.money), tostring(rw.xp), tostring(rw.pl),
   }, "#")
 end
 
@@ -660,7 +792,14 @@ local GATHER_SPELLS = {
            en = { "Herbalism", "Herb Gathering" } },
   fish = { ids = { 7620, 7731, 7732, 13615, 18248, 24303, 1229271, 1240948, 1240959, 1240970, 1240983 },
            en = { "Fishing" } },
+  -- 1.0.5: Pick Pocket and Disenchant (the only ids with these names in the Forever 1.60 SpellName that a player
+  -- casts; "(PT)" test spells and the passive "Improved Pick Pocket…" are left out).
+  pick = { ids = { 921 }, en = { "Pick Pocket" } },
+  dis = { ids = { 13262 }, en = { "Disenchant" } },
 }
+-- The loot source each gathering kind applies to: skinning a creature, mining/herbing a creature (ore/herb nodes are
+-- objects and stay "object"), picking a creature's pocket, disenchanting an item.
+local GATHER_ON = { skin = "npc", mine = "npc", herb = "npc", pick = "npc", dis = "item" }
 
 local function spellName(id)
   if not id then return nil end
@@ -727,6 +866,13 @@ local function onSpellcastSent(unit, target, _, spellId)
   session.sentName, session.sentAt = nil, 0
   local name = str(target)
   local g = gatherKind(spellId)
+  if g == "dis" then
+    -- The disenchanted item is destroyed, so its GUID may no longer give an id in the loot window: remember the id
+    -- now (the target is the item's name; GetItemInfoInstant answers for an item in the bags).
+    local f = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+    session.disItem = name and num(try(f, name)) or nil
+    return
+  end
   if not name or not (openSpell(spellId) or g == "mine" or g == "herb") then return end
   if playerName(name) then return end
   session.sentName = name
@@ -770,24 +916,50 @@ local function lootFishing(n, moneyType)
     if slotType == moneyType then
       money = money + c
     else
-      local itemId = itemIdFromLink(try(GetLootSlotLink, slot))
-      if itemId then items[#items + 1] = { id = itemId, c = c > 0 and c or 1 } end
+      local link = try(GetLootSlotLink, slot)
+      local itemId = itemIdFromLink(link)
+      if itemId then items[#items + 1] = { id = itemId, c = c > 0 and c or 1, s = suffixFromLink(link) } end
     end
   end
   if #items == 0 and money <= 0 then return end
   session.looted[key] = true
   local m, x, y = playerPos()
-  pushLoot({ q = nextSeq(), t = now(), src = "fish", id = m or 0, m = m, x = x, y = y, items = items, money = money > 0 and money or nil })
+  pushLoot({ q = nextSeq(), t = now(), src = "fish", id = m or 0, m = m, x = x, y = y, items = items, money = money > 0 and money or nil,
+             pf = str(try(UnitFactionGroup, "player")) })
   touch("loot", "fishing")
+end
+
+local SECRET_SOURCE = "?"   -- loot slots whose source GUID the game hides (secret value, e.g. in instances)
+
+-- 1.0.5: who dropped loot whose source GUIDs are hidden? First the dead target when its GUID is readable, then the
+-- boss of a won encounter (ENCOUNTER_END) in the last ENC_WINDOW seconds – once per encounter, and only if a dead
+-- target with a readable name is that boss. Returns key, kind, src, id (or nil: the loot is not recorded).
+local function hiddenSource()
+  if unitFlag(UnitIsDead, "target") == true then
+    local g = str(try(UnitGUID, "target"))
+    local kind, id = parseGuid(g)
+    if kind == "npc" then return g, kind, "npc", id end
+  end
+  local e = session.encounter
+  if e and not e.used and (num(try(GetTime)) or 0) - e.at <= ENC_WINDOW then
+    local dead = unitFlag(UnitIsDead, "target") == true
+    local tn = dead and str(try(UnitName, "target")) or nil
+    if not tn or not e.name or tn == e.name then
+      e.used = true
+      return "enc|" .. e.id .. "|" .. e.at, "boss", "boss", e.id
+    end
+  end
+  return nil
 end
 
 local function onLootOpened()
   local n = num(try(GetNumLootItems)) or 0
   if n <= 0 then return end
+  if laggy() then session.gather = nil; return end   -- 1.0.5: stale slot data at high latency
   local moneyType0 = (Enum and Enum.LootSlotType and Enum.LootSlotType.Money) or 2
   if clean(try(IsFishingLoot)) then return lootFishing(n, moneyType0) end
-  -- A finished Skinning/Mining/Herb Gathering cast just before this loot window: loot from a creature is
-  -- that gathering ("skin"/"mine"/"herb"), not its ordinary drop. The cast belongs to this loot window only.
+  -- A finished Skinning/Mining/Herb Gathering/Pick Pocket/Disenchant cast just before this loot window: loot from
+  -- the matching source (GATHER_ON) is that gathering, not its ordinary drop. The cast belongs to this window only.
   local g = recentGather()
   session.gather = nil
   local gatherSrc = g and g.kind ~= "fish" and g.kind or nil
@@ -795,10 +967,13 @@ local function onLootOpened()
   local sources, order = {}, {}
   for slot = 1, n do
     local slotType = num(try(GetLootSlotType, slot))
-    local itemId = itemIdFromLink(try(GetLootSlotLink, slot))
+    local link = try(GetLootSlotLink, slot)
+    local itemId = itemIdFromLink(link)
+    local suffix = suffixFromLink(link)
     local src = { try(GetLootSourceInfo, slot) }
     for k = 1, #src, 2 do
       local g = str(src[k])
+      if not g and src[k] ~= nil then g = SECRET_SOURCE end
       local c = num(src[k + 1]) or 1
       if g then
         local s = sources[g]
@@ -806,23 +981,40 @@ local function onLootOpened()
         if slotType == moneyType then
           s.money = s.money + c
         elseif itemId then
-          s.items[#s.items + 1] = { id = itemId, c = c }
+          s.items[#s.items + 1] = { id = itemId, c = c, s = suffix }
         end
       end
     end
   end
   local t = num(try(GetTime)) or 0
+  local pf = str(try(UnitFactionGroup, "player"))
+  local grp = inGroup() or nil
   for _, sg in ipairs(order) do
-    local kind, id = parseGuid(sg)
-    local src = kind
-    if kind == "npc" and gatherSrc then src = gatherSrc end
-    -- Dedup per (GUID, src): ordinary loot and skinning of the same corpse are two entries; neither blocks the other.
-    local key = sg .. "|" .. tostring(src)
-    if not session.looted[key] then
+    local guid, kind, src, id
+    if sg == SECRET_SOURCE and gatherSrc then
+      -- A gathering cast (skinning, pick pocket …) with a hidden source: its target, never a boss.
+      local tg = str(try(UnitGUID, "target"))
+      local tk, tid = parseGuid(tg)
+      if tk and GATHER_ON[gatherSrc] == tk then guid, kind, src, id = tg, tk, gatherSrc, tid end
+    elseif sg == SECRET_SOURCE then
+      guid, kind, src, id = hiddenSource()
+    else
+      kind, id = parseGuid(sg)
+      guid, src = sg, kind
+      -- A disenchanted item is gone, so its GUID may not resolve: use the id remembered at the cast.
+      if gatherSrc == "dis" and not kind and sg:find("^Item%-") then kind, id, src = "item", session.disItem, "item" end
+      if gatherSrc and kind and GATHER_ON[gatherSrc] == kind then src = gatherSrc end
+    end
+    -- Dedup per (GUID, src): ordinary loot and skinning or pickpocketing of the same corpse are separate entries;
+    -- none of them blocks another.
+    local key = guid and (guid .. "|" .. tostring(src))
+    if key and id and not session.looted[key] then
       session.looted[key] = true
       local s = sources[sg]
       if kind and (#s.items > 0 or s.money > 0) then
-        pushLoot({ q = nextSeq(), t = now(), src = src, id = id, items = s.items, money = s.money > 0 and s.money or nil })
+        -- h = corpse/chest tag (guidTag) so the server counts a corpse once when several group members upload it.
+        pushLoot({ q = nextSeq(), t = now(), src = src, id = id, items = s.items, money = s.money > 0 and s.money or nil,
+                   h = kind ~= "boss" and guidTag(guid) or nil, grp = grp, pf = pf })
         touch("loot", tostring(id))
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
@@ -831,6 +1023,26 @@ local function onLootOpened()
         end
       end
     end
+  end
+  if gatherSrc == "dis" then session.disItem = nil end
+end
+
+-- ENCOUNTER_END(encounterID, name, difficultyID, groupSize, success): a won encounter may own the next loot window
+-- whose sources are hidden (hiddenSource). The name is only compared, never saved.
+local function onEncounterEnd(encounterId, name, _, _, success)
+  encounterId = num(encounterId)
+  if not encounterId or encounterId <= 0 or num(success) ~= 1 then return end
+  session.encounter = { id = encounterId, name = str(name), at = num(try(GetTime)) or 0 }
+end
+
+-- CHAT_MSG_SYSTEM: only compared with the client's own drunk/sober texts (DRUNK_MESSAGE_SELF1–4) for the drunk
+-- guard. Nothing from the message is ever saved.
+local function onSystemMessage(msg)
+  msg = str(msg)
+  if not msg or not _G then return end
+  if msg == str(_G.DRUNK_MESSAGE_SELF1) then session.drunkAt = nil; return end
+  for i = 2, 4 do
+    if msg == str(_G["DRUNK_MESSAGE_SELF" .. i]) then session.drunkAt = num(try(GetTime)) or 0; return end
   end
 end
 
@@ -845,15 +1057,36 @@ local function onTaxiMapOpened()
   if not mapId then return end
   local nodes = try(C_TaxiMap.GetAllTaxiNodes, mapId)
   if type(nodes) ~= "table" then return end
-  local current = (Enum and Enum.FlightPathState and Enum.FlightPathState.Current) or 0
+  local FPS = Enum and Enum.FlightPathState
+  local current = (FPS and FPS.Current) or 0
+  local reachable = (FPS and FPS.Reachable) or 1
+  -- 1.0.5: the price (copper) from here to every reachable node, by node id (TaxiNodeCost(slotIndex)).
+  local costs, nCosts = {}, 0
+  for _, node in ipairs(nodes) do
+    if type(node) == "table" and num(node.state) == reachable then
+      local dest, slot = num(node.nodeID), num(node.slotIndex)
+      local c = dest and slot and num(try(TaxiNodeCost, slot))
+      if c and c >= 0 then costs[dest] = floor(c); nCosts = nCosts + 1 end
+    end
+  end
+  local function costSig(t)
+    local keys = {}
+    for k, v in pairs(t or {}) do keys[#keys + 1] = tostring(k) .. "=" .. tostring(v) end
+    table.sort(keys)
+    return table.concat(keys, ",")
+  end
   for _, node in ipairs(nodes) do
     if type(node) == "table" and num(node.state) == current then
       local nodeId, name = num(node.nodeID), str(node.name)
       local m, x, y = playerPos()
       if nodeId and name and m then
         local old = db.flights[nodeId]
-        if not old or old.n ~= name or old.m ~= m or abs((old.x or 0) - x) > SPOT_RADIUS or abs((old.y or 0) - y) > SPOT_RADIUS then
-          db.flights[nodeId] = { n = name, m = m, x = x, y = y, q = nextSeq() }
+        local rr = num(try(UnitReaction, "npc", "player"))
+        local c = nCosts > 0 and costs or (old and old.c) or nil
+        if not old or old.n ~= name or old.m ~= m or abs((old.x or 0) - x) > SPOT_RADIUS or abs((old.y or 0) - y) > SPOT_RADIUS
+           or costSig(old.c) ~= costSig(c) or (nCosts > 0 and old.rr ~= rr) then
+          -- rr = the flight master's UnitReaction toward the player (prices may carry a reputation discount at 6+).
+          db.flights[nodeId] = { n = name, m = m, x = x, y = y, q = nextSeq(), c = c, rr = nCosts > 0 and rr or (old and old.rr) or nil }
           touch("flight", name)
         end
       end
@@ -914,6 +1147,26 @@ local function addArea(rec)
   return true
 end
 
+-- 1.0.5: an exact spot – the player stands within interact distance (CheckInteractDistance index 3, ~10 yards) of a
+-- mob nobody else has tapped, out of combat. Saved in rec.e (at most MOB_EXACT, 1 map-% apart, day only).
+local function nearUnit(unit)
+  if not CheckInteractDistance then return false end
+  if unitFlag(CheckInteractDistance, unit, 3) ~= true then return false end
+  return unitFlag(UnitIsTapDenied, unit) == false
+end
+
+local function addExact(rec)
+  local m, x, y = playerPos()
+  if not m then return false end
+  rec.e = rec.e or {}
+  for _, s in ipairs(rec.e) do
+    if s.m == m and abs((s.x or 0) - x) < EXACT_RADIUS and abs((s.y or 0) - y) < EXACT_RADIUS then return false end
+  end
+  if #rec.e >= MOB_EXACT then return false end
+  rec.e[#rec.e + 1] = { m = m, x = x, y = y, t = floor(now() / 86400) * 86400, q = nextSeq() }
+  return true
+end
+
 local function noteMob(unit)
   if inCombat() then return end
   local guid = str(try(UnitGUID, unit))
@@ -921,9 +1174,11 @@ local function noteMob(unit)
   if kind ~= "npc" then return end            -- players' and pets' GUIDs are not even remembered
   local t = num(try(GetTime)) or 0
   local last = session.mobSeen[guid]
-  if last and t - last < MOB_REPEAT then return end
+  -- A mob looked at again within MOB_REPEAT is skipped – unless the player is now next to it (exact spot, once).
+  local near = not session.mobNear[guid] and nearUnit(unit)
+  if last and t - last < MOB_REPEAT and not near then return end
   if not last then
-    if session.mobSeenN >= MOB_GUIDS then session.mobSeen = {}; session.mobSeenN = 0 end
+    if session.mobSeenN >= MOB_GUIDS then session.mobSeen, session.mobNear, session.mobSeenN = {}, {}, 0 end
     session.mobSeenN = session.mobSeenN + 1
   end
   session.mobSeen[guid] = t
@@ -939,7 +1194,8 @@ local function noteMob(unit)
     rec = {}; db.mobs[id] = rec; session.mobCount = session.mobCount + 1
   end
   rec.n = name
-  local l = num(try(UnitLevel, unit))
+  -- 1.0.5: no level while drunk (the client then shows other levels).
+  local l = not drunk() and num(try(UnitLevel, unit)) or nil
   if l and l > 0 then
     if not rec.lmin or rec.lmin < 1 then rec.lmin, rec.lmax = l, l
     else rec.lmin, rec.lmax = math.min(rec.lmin, l), math.max(rec.lmax or l, l) end
@@ -951,7 +1207,59 @@ local function noteMob(unit)
   local c = str(try(UnitClassification, unit))
   if c and CLASSIFICATIONS[c] then rec.c = c end
   if ct then rec.ct = ct end
-  if addArea(rec) or isNew then touch("mob", name) end
+  local changed = addArea(rec) or isNew
+  if near then
+    session.mobNear[guid] = true
+    if addExact(rec) then changed = true end
+  end
+  if noteStats(rec, unit, l) then changed = true end
+  if changed then touch("mob", name) end
+end
+
+---------------------------------------------------------------------------
+-- Kills (1.0.5): the denominator for drop chances
+---------------------------------------------------------------------------
+
+-- A creature counts as our kill when it was seen alive as our target and then dead with the tap ours or our group's
+-- (UnitIsTapDenied = false). KILL_LOOT_DELAY later CanLootUnit says whether the corpse had loot, so the server can
+-- count kills without loot (they never open a loot window). Saved: creature id, corpse tag (guidTag), the day,
+-- loot yes/no (nil = unknown) and the group flag – never the GUID. Event-driven only (target changes, the target's
+-- UNIT_HEALTH, leaving combat).
+local function pushKill(entry)
+  local kills = db.kills
+  kills[#kills + 1] = entry
+  while #kills > MAX_KILLS do table.remove(kills, 1) end
+end
+
+local function remember(set, guid)
+  if session.killN >= MOB_GUIDS then session.alive, session.killed, session.killN = {}, {}, 0 end
+  if not set[guid] then session.killN = session.killN + 1 end
+  set[guid] = true
+end
+
+local function watchTarget()
+  local guid = str(try(UnitGUID, "target"))
+  local kind, id = parseGuid(guid)
+  if kind ~= "npc" or session.killed[guid] then return end
+  local dead = unitFlag(UnitIsDead, "target")
+  if dead == false then
+    if not session.alive[guid] and wildNpc("target") then remember(session.alive, guid) end
+    return
+  end
+  if dead ~= true or not session.alive[guid] then return end
+  if unitFlag(UnitIsTapDenied, "target") ~= false then return end
+  remember(session.killed, guid)
+  session.alive[guid] = nil
+  local entry = { t = floor(now() / 86400) * 86400, id = id, h = guidTag(guid), grp = inGroup() or nil }
+  after(KILL_LOOT_DELAY, function()
+    if CanLootUnit then
+      local has = clean(try(CanLootUnit, guid))
+      if has ~= nil then entry.loot = has and true or false end
+    end
+    entry.q = nextSeq()
+    pushKill(entry)
+    touch("kill", tostring(id))
+  end)
 end
 
 ---------------------------------------------------------------------------
@@ -982,7 +1290,39 @@ local function onInteractionShow(kind)
   if kind == PIT.Auctioneer then noteUnit("npc", { auction = true })
   elseif kind == PIT.StableMaster then noteUnit("npc", { stable = true })
   elseif kind == PIT.SpiritHealer then noteUnit("npc", { spirit = true })
-  elseif kind == PIT.MailInfo then onMailShow() end
+  elseif kind == PIT.MailInfo then onMailShow()
+  -- 1.0.5: innkeeper, battlemaster, talent reset and tabard vendor (both spellings the enum has used).
+  elseif kind == PIT.Binder then noteUnit("npc", { innkeeper = true })
+  elseif kind == PIT.BattleMaster or kind == PIT.Battlemaster then noteUnit("npc", { battlemaster = true })
+  elseif kind == PIT.TalentMaster then noteUnit("npc", { talent = true })
+  elseif kind == PIT.GuildTabardVendor or kind == PIT.TabardVendor then noteUnit("npc", { tabard = true }) end
+end
+
+-- 1.0.5: a readable game object (book, plaque, sign) – ITEM_TEXT_BEGIN with an object as the interaction unit.
+-- Text read from a bag item has no object there and is ignored; the text itself is never read.
+local function onItemTextBegin()
+  local kind, id = parseGuid(try(UnitGUID, "npc"))
+  if kind == "object" then noteObject(id, str(try(UnitName, "npc"))) end
+end
+
+-- 1.0.5: PLAYER_SOFT_INTERACT_CHANGED(old, new) – the object the interact key would use now (Mainline soft
+-- targeting, a few yards away). Only game objects, out of combat, each GUID at most once per MOB_REPEAT seconds.
+local function onSoftInteract(_, newGuid)
+  if inCombat() then return end
+  local guid = str(newGuid)
+  local kind, id = parseGuid(guid)
+  if kind ~= "object" then return end
+  local t = num(try(GetTime)) or 0
+  local last = session.softSeen[guid]
+  if last and t - last < MOB_REPEAT then return end
+  if not last then
+    if session.softN >= MOB_GUIDS then session.softSeen, session.softN = {}, 0 end
+    session.softN = session.softN + 1
+  end
+  session.softSeen[guid] = t
+  -- The name only when the soft target still is this object (never another unit's name).
+  local name = str(try(UnitGUID, "softinteract")) == guid and str(try(UnitName, "softinteract")) or nil
+  noteObject(id, name)
 end
 
 ---------------------------------------------------------------------------
@@ -1048,8 +1388,10 @@ local function newInstallId()
   return table.concat(hex)
 end
 
+local TABLES = { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail", "kills" }
+
 local function ensureTables(d)
-  for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail" }) do
+  for _, k in ipairs(TABLES) do
     if type(d[k]) ~= "table" then d[k] = {} end
   end
 end
@@ -1106,13 +1448,13 @@ local function showStatus()
   local L = T()
   local c = {
     count(db.npcs), count(db.trainers), count(db.vendors), count(db.quests),
-    count(db.objects), #db.loot, count(db.flights), count(db.mobs), #db.mail,
+    count(db.objects), #db.loot, count(db.flights), count(db.mobs), #db.mail, #db.kills,
   }
   local total = 0
   for _, v in ipairs(c) do total = total + v end
   say(string.format(L.status_head, VERSION, total, db.seq or 0))
   if total == 0 then say(L.status_none); return end
-  say(string.format(L.status_counts, c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9]))
+  say(string.format(L.status_counts, c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10]))
   if session.lastKind then
     say(string.format(L.status_last, L["kind_" .. session.lastKind] or session.lastKind,
       tostring(session.lastName), ago(L, now() - (session.lastTime or now()))))
@@ -1145,9 +1487,10 @@ local function onSlash(msg)
     say(string.format(L.lang_set, opt.lang or "auto"))
   elseif cmd == "reset" then
     if arg == "confirm" and session.resetArmed then
-      for _, k in ipairs({ "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail" }) do db[k] = {} end
+      for _, k in ipairs(TABLES) do db[k] = {} end
       db.char = nil
       session.looted = {}
+      session.alive, session.killed, session.killN, session.mobNear = {}, {}, 0, {}
       session.objPending = {}
       session.mobSeen, session.mobSeenN, session.mobCount = {}, 0, 0
       session.resetArmed = false
@@ -1175,7 +1518,7 @@ end
 local handlers = {
   GOSSIP_SHOW = onGossip,
   MERCHANT_SHOW = onMerchantShow,
-  MERCHANT_UPDATE = function() if session.vendorId then queueVendorScan() end end,
+  MERCHANT_UPDATE = onMerchantUpdate,
   MERCHANT_CLOSED = function() session.vendorId = nil end,
   TRAINER_SHOW = onTrainerShow,
   TRAINER_UPDATE = onTrainerUpdate,
@@ -1190,12 +1533,24 @@ local handlers = {
   TAXIMAP_OPENED = onTaxiMapOpened,
   BANKFRAME_OPENED = function() noteUnit("npc", nil) end,
   -- 1.0.4: mobs you only look at, mailboxes and service NPCs (auction house, stable, spirit healer).
-  PLAYER_TARGET_CHANGED = function() noteMob("target") end,
+  PLAYER_TARGET_CHANGED = function() noteMob("target"); watchTarget() end,
   UPDATE_MOUSEOVER_UNIT = function() noteMob("mouseover") end,
   MAIL_SHOW = onMailShow,
   AUCTION_HOUSE_SHOW = function() noteUnit("npc", { auction = true }) end,
   PET_STABLE_SHOW = function() noteUnit("npc", { stable = true }) end,
   PLAYER_INTERACTION_MANAGER_FRAME_SHOW = onInteractionShow,
+  -- 1.0.5: kills (the target's health and leaving combat), encounters, the drunk guard, more service roles and
+  -- object positions from readable and soft-interact objects.
+  UNIT_HEALTH = function(unit) if unit == "target" then watchTarget() end end,
+  PLAYER_REGEN_ENABLED = watchTarget,
+  ENCOUNTER_END = onEncounterEnd,
+  CHAT_MSG_SYSTEM = onSystemMessage,
+  CONFIRM_BINDER = function() noteUnit("npc", { innkeeper = true }) end,
+  BATTLEFIELDS_SHOW = function() noteUnit("npc", { battlemaster = true }) end,
+  CONFIRM_TALENT_WIPE = function() noteUnit("npc", { talent = true }) end,
+  OPEN_TABARD_FRAME = function() noteUnit("npc", { tabard = true }) end,
+  ITEM_TEXT_BEGIN = onItemTextBegin,
+  PLAYER_SOFT_INTERACT_CHANGED = onSoftInteract,
   UNIT_SPELLCAST_SENT = onSpellcastSent,
   UNIT_SPELLCAST_SUCCEEDED = onSpellcastSucceeded,
   LOOT_OPENED = onLootOpened,
@@ -1213,7 +1568,12 @@ local function dispatch(_, event, ...)
     if ... ~= ADDON then return end
     initDb()
     for ev in pairs(handlers) do
-      try(frame.RegisterEvent, frame, ev)
+      -- UNIT_HEALTH only for the target where the client can filter by unit (fewer events to ignore).
+      if ev == "UNIT_HEALTH" and frame.RegisterUnitEvent then
+        try(frame.RegisterUnitEvent, frame, ev, "target")
+      else
+        try(frame.RegisterEvent, frame, ev)
+      end
     end
     try(frame.UnregisterEvent, frame, "ADDON_LOADED")
     return
@@ -1251,4 +1611,5 @@ ns._test = {
   session = session, parseGuid = parseGuid, clean = clean, db = function() return db end,
   noteMob = noteMob, wildNpc = wildNpc, onSpellcastSent = onSpellcastSent, onLootOpened = onLootOpened,
   onMailShow = onMailShow, onInteractionShow = onInteractionShow, handlers = handlers,
+  guidTag = guidTag, suffixFromLink = suffixFromLink, costList = costList, drunk = drunk,
 }

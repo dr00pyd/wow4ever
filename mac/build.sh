@@ -143,7 +143,45 @@ if [[ $MAKE_DMG -eq 1 ]]; then
   rm -rf "$STAGE" "$DMG" && mkdir -p "$STAGE"
   ditto "$APP" "$STAGE/$APP_NAME"
   ln -s /Applications "$STAGE/Applications"
-  hdiutil create -volname "Forever Scout" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+  # Utseende: vår ikon på skivan (.VolumeIcon.icns) och ett fönster med bakgrund (assets/dmg-background*.png, 640×400)
+  # där appen och Program-genvägen står på var sin sida om pilen. Själva .dmg-filen får alltid Finders standardikon –
+  # webbläsare tar bort egna filikoner vid nedladdning. Misslyckas Finder-skriptet blir det en vanlig DMG.
+  mkdir -p "$STAGE/.background"
+  tiffutil -cathidpicheck "$HERE/assets/dmg-background.png" "$HERE/assets/dmg-background@2x.png" -out "$STAGE/.background/bg.tiff"
+  cp "$HERE/assets/AppIcon.icns" "$STAGE/.VolumeIcon.icns"
+  RW="$BUILD/dmg-rw.dmg"
+  MNT="$BUILD/dmg-mnt"
+  rm -rf "$RW" "$MNT"
+  hdiutil create -volname "Forever Scout" -srcfolder "$STAGE" -ov -format UDRW "$RW"
+  hdiutil attach -readwrite -noverify -noautoopen -mountpoint "$MNT" "$RW" >/dev/null
+  xcrun SetFile -a C "$MNT" 2>/dev/null || echo "build.sh: SetFile saknas – skivan får standardikonen" >&2
+  osascript <<'APPLESCRIPT' || echo "build.sh: Finder-layouten misslyckades (ge Terminal behörighet att styra Finder) – vanlig DMG" >&2
+tell application "Finder"
+  tell disk "Forever Scout"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 840, 548}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 128
+    set text size of opts to 13
+    set background picture of opts to file ".background:bg.tiff"
+    set position of item "Forever Scout.app" of container window to {170, 196}
+    set position of item "Applications" of container window to {470, 196}
+    close
+    open
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+APPLESCRIPT
+  sync
+  hdiutil detach "$MNT" >/dev/null || hdiutil detach -force "$MNT" >/dev/null
+  hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -ov -o "$DMG"
+  rm -f "$RW"
   if [[ -n "$IDENTITY" ]]; then
     codesign --force --timestamp --sign "$IDENTITY" "$DMG"
     if [[ -n "$NOTARY_PROFILE" ]]; then

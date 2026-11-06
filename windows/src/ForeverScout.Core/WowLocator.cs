@@ -134,6 +134,27 @@ public static class WowLocator
         return list;
     }
 
+    /// <summary>
+    /// Auktionsaddonernas prisfiler (Auctionator.lua, Auc-Stat-Simple.lua) under WTF\Account\*\SavedVariables – tom lista
+    /// om "Dela auktionspriser" är av (då nekar SafeFs filerna ändå). Kontonamnet i sökvägen visas/skickas aldrig.
+    /// </summary>
+    public static List<(string Path, IAuctionReader Reader)> AuctionFiles(GameDir dir)
+    {
+        var list = new List<(string, IAuctionReader)>();
+        if (!SafeFs.AuctionFilesAllowed) return list;
+        try
+        {
+            foreach (var acc in SafeFs.GetDirectories(dir.AccountDir))
+                foreach (var reader in AuctionData.Readers)
+                {
+                    var f = System.IO.Path.Combine(acc, "SavedVariables", reader.FileName);
+                    if (SafeFs.FileExists(f)) list.Add((f, reader));
+                }
+        }
+        catch (SafeFsException) { }
+        return list;
+    }
+
     /// <summary>Alla Cache\ADB\&lt;locale&gt;\DBCache.bin.</summary>
     public static List<string> HotfixFiles(GameDir dir)
     {

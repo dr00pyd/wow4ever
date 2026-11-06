@@ -1,0 +1,2 @@
+# Auctionator.lua innehåller en rå CBOR-sträng (byte >= 0x80 och ett escapat radslut) – lagras byte för byte.
+Auctionator.lua -text

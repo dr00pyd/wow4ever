@@ -32,6 +32,16 @@ public sealed class Settings
     /// <summary>SHA-256 för senast skickade DBCache.bin per fil.</summary>
     public Dictionary<string, string> HotfixSha { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// "Dela auktionspriser (Auctionator/Auctioneer)" – av som standard. Bara när den är på får SafeFs läsa
+    /// Auctionator.lua/Auc-Stat-Simple.lua, och då skickas bara föremål, realm/fraktion, dag, lägsta pris och antal.
+    /// </summary>
+    public bool ShareAuctionPrices { get; set; }
+    /// <summary>SHA-256 för senast hanterade auktionsfil (nyckel = Privacy.FileKey(sökväg)) – oförändrad fil läses inte om.</summary>
+    public Dictionary<string, string> AuctionSha { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Vattenmärke per auktionsfil: senaste dag ("yyyy-MM-dd") som skickats. Nästa gång skickas den dagen och nyare.</summary>
+    public Dictionary<string, string> AuctionDay { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Offline-kö: antal misslyckade försök i rad och när nästa försök görs (null = inget väntar).</summary>
     public int RetryAttempts { get; set; }
     public DateTime? NextRetryUtc { get; set; }
@@ -113,6 +123,8 @@ public sealed class Settings
         s.UploadedSeq = new(s.UploadedSeq, StringComparer.OrdinalIgnoreCase);
         s.HotfixSha = new(s.HotfixSha, StringComparer.OrdinalIgnoreCase);
         s.UploadedSha = new(s.UploadedSha, StringComparer.OrdinalIgnoreCase);
+        s.AuctionSha = new(s.AuctionSha ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.AuctionDay = new(s.AuctionDay ?? new(), StringComparer.OrdinalIgnoreCase);
         s.FilePath = path;
         return s;
     }

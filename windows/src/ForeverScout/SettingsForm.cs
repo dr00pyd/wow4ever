@@ -12,6 +12,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _autostart = Check(S("set.autostart"));
     private readonly CheckBox _autoupload = Check(S("set.autoupload"));
     private readonly CheckBox _hotfix = Check(S("set.hotfix"));
+    private readonly CheckBox _auction = Check(S("set.auction"));
     private readonly CheckBox _askClose = Check(S("set.askclose"));
     private readonly Label _error = Theme.Label("", 9.5f, Theme.Err);
 
@@ -53,6 +54,9 @@ internal sealed class SettingsForm : Form
             flow.Controls.Add(Spacer());
             flow.Controls.Add(_autoupload);
             flow.Controls.Add(_hotfix);
+            flow.Controls.Add(_auction);
+            var auctionHint = new Label { Text = S("set.auction.hint"), AutoSize = true, MaximumSize = new Size(520, 0), ForeColor = Theme.Muted, Font = Theme.Ui(9f), Margin = new Padding(20, 0, 0, 4) };
+            flow.Controls.Add(auctionHint);
             flow.Controls.Add(_autostart);
             flow.Controls.Add(_askClose);
             var openLog = Theme.QuietButton(S("set.openlog"));
@@ -114,6 +118,7 @@ internal sealed class SettingsForm : Form
         _autostart.Checked = Autostart.IsEnabled;
         _autoupload.Checked = settings.AutoUpload;
         _hotfix.Checked = settings.UploadHotfix;
+        _auction.Checked = settings.ShareAuctionPrices;
         _askClose.Checked = !settings.DontAskOnClose;
         FillDirs(WowLocator.Locate());
         if (!string.IsNullOrEmpty(settings.GameDir)) _dir.Text = settings.GameDir;
@@ -151,6 +156,7 @@ internal sealed class SettingsForm : Form
         _settings.Language = _lang.SelectedIndex switch { 1 => "sv", 2 => "en", _ => "auto" };
         _settings.AutoUpload = _autoupload.Checked;
         _settings.UploadHotfix = _hotfix.Checked;
+        _settings.ShareAuctionPrices = _auction.Checked;
         _settings.DontAskOnClose = !_askClose.Checked;
         try { if (_autostart.Checked != Autostart.IsEnabled) Autostart.Set(_autostart.Checked); }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException) { _error.Text = S("err.io"); return; }

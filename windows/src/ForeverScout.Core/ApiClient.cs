@@ -25,6 +25,15 @@ public sealed class HotfixResult
     [JsonPropertyName("sha256")] public string? Sha256 { get; set; }
 }
 
+/// <summary>Svar från POST /api/bidrag/auktioner.</summary>
+public sealed class AuctionResult
+{
+    /// <summary>Rader som sparades.</summary>
+    [JsonPropertyName("accepted")] public int Accepted { get; set; }
+    /// <summary>Rader som hoppades över (okänt föremål, orimligt pris, för gammal dag …).</summary>
+    [JsonPropertyName("skipped")] public int Skipped { get; set; }
+}
+
 public sealed class MeResult
 {
     [JsonPropertyName("name")] public string? Name { get; set; }
@@ -273,6 +282,21 @@ public sealed class ApiClient : IDisposable
         content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         r.Content = content;
         return await Send<HotfixResult>(r, ct);
+    }
+
+    /// <summary>
+    /// Auktionspriser (<see cref="AuctionData.Payload"/>): JSON med bara föremål, realm/fraktion, dag, lägsta pris och
+    /// antal – aldrig själva filen. Gzip-komprimerat.
+    /// </summary>
+    public async Task<AuctionResult> UploadAuctionsAsync(byte[] json, CancellationToken ct = default)
+    {
+        if (json.LongLength > MaxUploadBytes) throw new ApiException(ErrorCodes.UploadTooLarge);
+        var r = Req(HttpMethod.Post, "/api/bidrag/auktioner", true);
+        var content = new ByteArrayContent(Gzip(json));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+        content.Headers.ContentEncoding.Add("gzip");
+        r.Content = content;
+        return await Send<AuctionResult>(r, ct);
     }
 
     public Task<MeResult> MeAsync(CancellationToken ct = default) => Send<MeResult>(Req(HttpMethod.Get, "/api/bidrag/jag", true), ct);

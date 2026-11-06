@@ -94,6 +94,34 @@ public static class UploadPreview
                 }
                 catch (Exception ex) when (ex is IOException or SafeFsException or ScoutException) { Line(Strings.Error(ex)); }
             }
+
+        Line(new string('=', 78));
+        if (!settings.ShareAuctionPrices)
+            Line(sv ? "Auktionspriser: delas inte (Inställningar → \"Dela auktionspriser\" är av). Auctionator.lua och Auc-Stat-Simple.lua läses inte."
+                    : "Auction prices: not shared (Settings → \"Share auction prices\" is off). Auctionator.lua and Auc-Stat-Simple.lua are not read.");
+        else
+        {
+            var today = AuctionData.Today(TimeZoneInfo.Local);
+            var found = WowLocator.AuctionFiles(dir);
+            if (found.Count == 0) Line(sv ? "Auktionspriser: ingen Auctionator.lua eller Auc-Stat-Simple.lua hittades." : "Auction prices: no Auctionator.lua or Auc-Stat-Simple.lua found.");
+            foreach (var (f, reader) in found)
+            {
+                try
+                {
+                    var bytes = SafeFs.ReadAllBytes(f);
+                    var key = Privacy.FileKey(f);
+                    var read = reader.Read(bytes, SafeFs.Stat(f)?.LastWriteUtc ?? DateTime.UtcNow, TimeZoneInfo.Local);
+                    DateOnly? mark = settings.AuctionDay.TryGetValue(key, out var w) && DateOnly.TryParse(w, CultureInfo.InvariantCulture, out var wd) ? wd : null;
+                    var rows = AuctionData.Select(read.Rows, mark, today);
+                    Line(sv ? $"Auktionspriser ur {reader.FileName}: POST {api.BaseUri.Host}/api/bidrag/auktioner – {rows.Count:N0} rader skickas (bara föremål, realm, fraktion, dag, lägsta pris per styck i koppar, antal). Filen själv skickas inte."
+                            : $"Auction prices from {reader.FileName}: POST {api.BaseUri.Host}/api/bidrag/auktioner – {rows.Count:N0} rows will be sent (only item, realm, faction, day, lowest price per unit in copper, quantity). The file itself is not sent.");
+                    if (!read.Complete) Line(sv ? "Filen är ofullständig – väntar på att spelet skrivit klart." : "The file is incomplete – waiting for the game to finish writing.");
+                    var sample = AuctionData.Payload(reader.Source, rows.Take(20).ToList());
+                    Line(Encoding.UTF8.GetString(sample) + (rows.Count > 20 ? (sv ? $"  (+ {rows.Count - 20:N0} rader till)" : $"  (+ {rows.Count - 20:N0} more rows)") : ""));
+                }
+                catch (Exception ex) when (ex is IOException or SafeFsException or ScoutException) { Line(Strings.Error(ex)); }
+            }
+        }
         return sb.ToString();
     }
 }

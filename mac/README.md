@@ -43,6 +43,7 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
 |---|---|
 | `<spelkatalog>/Interface/AddOns/ForeverScout/**` (+ `.new`/`.old` under bytet) | läsa/skriva |
 | `<spelkatalog>/WTF/Account/*/SavedVariables/ForeverScout.lua` | läsa |
+| `<spelkatalog>/WTF/Account/*/SavedVariables/Auctionator.lua`, `…/Auc-Stat-Simple.lua` | läsa, **bara** när "Dela auktionspriser" är på (av som standard). Filen skickas aldrig, bara föremål, realm/fraktion, dag, lägsta pris och antal (se Windows-README och `docs/SCOUT.md`) |
 | `<spelkatalog>/Cache/ADB/*/DBCache.bin` | läsa |
 | `Interface`, `WTF/Account/*`, `…/SavedVariables`, `Cache/ADB/*` | bara existens och listning |
 | `~/Library/Application Support/ForeverScout/**` (katalogen 0700) | `settings.json`, `uploads.log`, `instance.lock`, `instance.sock` |

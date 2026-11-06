@@ -44,6 +44,8 @@ internal sealed class ScoutApp : ApplicationContext
     private readonly SyncCoordinator _sync;
     private string? _gameRoot; // verklig sökväg, godkänd av SafeFs
     private readonly NotifyIcon _tray;
+    /// <summary>Senaste bubblan var "Version x finns" (klick → uppdatera).</summary>
+    private bool _updateOffered;
     private readonly ContextMenuStrip _trayMenu;
     private readonly ToolStripMenuItem _miOpen, _miUpload, _miStatus, _miLogin, _miPause, _miPayload, _miUpdate, _miGuide, _miSettings, _miAbout, _miExit;
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 15_000 };
@@ -84,10 +86,15 @@ internal sealed class ScoutApp : ApplicationContext
 
         _tray = new NotifyIcon { Icon = TrayIcons.Normal, Text = "Forever Scout", Visible = true, ContextMenuStrip = _trayMenu };
         _tray.DoubleClick += (_, _) => ShowWindow();
-        _tray.BalloonTipClicked += (_, _) => ShowWindow();
+        // Klick på "Version x finns" startar uppdateringen; andra bubblor visar fönstret.
+        _tray.BalloonTipClicked += async (_, _) =>
+        {
+            if (_updateOffered) { _updateOffered = false; await CheckUpdates(interactive: true); }
+            else ShowWindow();
+        };
 
         _sync = new SyncCoordinator(
-            () => CurrentDir is { } d ? WowLocator.SavedVariableFiles(d) : [],
+            () => CurrentDir is { } d ? [.. WowLocator.SavedVariableFiles(d), .. WowLocator.AuctionFiles(d).Select(a => a.Path)] : [],
             async ct =>
             {
                 if (!AutoUploadActive || string.IsNullOrEmpty(Api.Key)) return;
@@ -154,6 +161,7 @@ internal sealed class ScoutApp : ApplicationContext
     public void ApplyGameDir()
     {
         _gameRoot = null;
+        SafeFs.AuctionFilesAllowed = Settings.ShareAuctionPrices; // av som standard: då nekas auktionsaddonernas filer
         try
         {
             if (!string.IsNullOrEmpty(Settings.GameDir) && Settings.IsGameDirConfirmed() && WowLocator.IsUsableGameDir(Settings.GameDir))
@@ -356,6 +364,7 @@ internal sealed class ScoutApp : ApplicationContext
         if (report.Error is { } e2) Log(F("journal.error", now, Error(e2)), report.WillRetry ? Theme.Warn : Theme.Err);
         if (report.FilesUploaded > 0) Log(F("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Theme.Ok);
         if (report.HotfixStored > 0) Log(F("journal.hotfix", now), Theme.Ok);
+        if (report.AuctionRows > 0) Log(F("journal.auctions", now, report.AuctionRows), Theme.Ok);
         if (report.NothingToDo && !quietIfNothing) Log(F("journal.nothing", now), Theme.Muted);
         if (report.FilesUploaded > 0 || report.HotfixStored > 0)
             Toast(null, F("done", report.FilesUploaded, report.HotfixStored), onlyIfHidden: true);
@@ -391,7 +400,18 @@ internal sealed class ScoutApp : ApplicationContext
             // Efter en versionskontroll: försök igen med filer som servern tidigare avvisade (servern kan ha rättats).
             // Oförändrade, redan uppladdade filer skickas inte (sha256), så detta kostar inget annars.
             _sync.Notify();
-            if (!interactive) return;
+            if (!interactive)
+            {
+                // 1.0.9: säg till när en nyare app finns (en bubbla per start, menyn visar versionen) – inget laddas ner utan klick.
+                var available = release.VersionOf(BuildInfo.UpdateKind);
+                if (release.File(BuildInfo.UpdateKind) is not null && SelfUpdater.IsNewer(available))
+                {
+                    _miUpdate.Text = F("menu.update.to", available);
+                    _updateOffered = true;
+                    _tray.ShowBalloonTip(10000, "Forever Scout", F("update.available", available), ToolTipIcon.Info);
+                }
+                return;
+            }
 
             // Varje variant uppdaterar sig från sin egen fil: full → clientFile, lite → liteFile.
             var kind = BuildInfo.UpdateKind;
@@ -515,11 +535,13 @@ internal sealed class ScoutApp : ApplicationContext
     public void OpenSettings(bool pickDir)
     {
         var oldLang = Settings.Language;
+        var oldAuction = Settings.ShareAuctionPrices;
         using var f = new SettingsForm(Settings, pickDir, LinkWithBrowser);
         var owner = _form is { Visible: true } ? _form : null;
         if ((owner is null ? f.ShowDialog() : f.ShowDialog(owner)) != DialogResult.OK) return;
         if (f.Unlinked || oldLang != Settings.Language) { Restart(); return; }
         ApplyGameDir();
+        if (Settings.ShareAuctionPrices && !oldAuction) _sync.Notify(); // nyss påslaget: dela det som redan finns
         InstallBundledAddonIfNeeded();
         RefreshStats(force: true);
         UpdateStatus();

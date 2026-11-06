@@ -18,6 +18,7 @@ internal sealed class SettingsWindow : Window
     private readonly CheckBox _autostart = Check(T("set.autostart"));
     private readonly CheckBox _autoupload = Check(T("set.autoupload"));
     private readonly CheckBox _hotfix = Check(T("set.hotfix"));
+    private readonly CheckBox _auction = Check(T("set.auction"));
     private readonly CheckBox _askClose = Check(T("set.askclose"));
     private readonly TextBlock _error = Look.Label("", 13, Look.Err);
 
@@ -57,6 +58,11 @@ internal sealed class SettingsWindow : Window
         flow.Children.Add(Spacer());
         flow.Children.Add(_autoupload);
         flow.Children.Add(_hotfix);
+        flow.Children.Add(_auction);
+        var auctionHint = Look.Label(T("set.auction.hint"), 12, Look.Muted);
+        auctionHint.MaxWidth = 520;
+        auctionHint.Margin = new Thickness(28, 0, 0, 4);
+        flow.Children.Add(auctionHint);
         flow.Children.Add(_autostart);
         flow.Children.Add(_askClose);
 
@@ -118,6 +124,7 @@ internal sealed class SettingsWindow : Window
         _autostart.IsChecked = SafeFs.AutostartEnabled;
         _autoupload.IsChecked = settings.AutoUpload;
         _hotfix.IsChecked = settings.UploadHotfix;
+        _auction.IsChecked = settings.ShareAuctionPrices;
         _askClose.IsChecked = !settings.DontAskOnClose;
         FillDirs(WowLocator.Locate());
         if (!string.IsNullOrEmpty(settings.GameDir)) _dir.Text = settings.GameDir;
@@ -155,6 +162,7 @@ internal sealed class SettingsWindow : Window
         _settings.Language = _lang.SelectedIndex switch { 1 => "sv", 2 => "en", _ => "auto" };
         _settings.AutoUpload = _autoupload.IsChecked == true;
         _settings.UploadHotfix = _hotfix.IsChecked == true;
+        _settings.ShareAuctionPrices = _auction.IsChecked == true;
         _settings.DontAskOnClose = _askClose.IsChecked != true;
         try { if ((_autostart.IsChecked == true) != SafeFs.AutostartEnabled) SafeFs.SetAutostart(_autostart.IsChecked == true); }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { _error.Text = T("err.io"); return; }

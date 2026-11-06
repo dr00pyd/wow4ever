@@ -13,6 +13,8 @@ public sealed class SyncReport
     /// <summary>Filer som servern avvisade (4xx, t.ex. bad-file). Räknas inte som uppladdade – skickas igen senare.</summary>
     public int FilesRejected { get; set; }
     public int HotfixStored { get; set; }
+    /// <summary>Auktionspriser (rader) som servern sparade i den här körningen.</summary>
+    public int AuctionRows { get; set; }
     public List<ConfirmedItem> NewConfirmed { get; } = new();
     /// <summary>Fel som ska visas (översätts med <see cref="Strings.Error"/>).</summary>
     public Exception? Error { get; set; }
@@ -20,7 +22,7 @@ public sealed class SyncReport
     public bool WillRetry { get; set; }
     /// <summary>Servern (422) eller spärrlistan säger att addonen måste uppdateras.</summary>
     public bool AddonBlocked { get; set; }
-    public bool NothingToDo => FilesUploaded == 0 && HotfixStored == 0 && Error is null && !AddonBlocked;
+    public bool NothingToDo => FilesUploaded == 0 && HotfixStored == 0 && AuctionRows == 0 && Error is null && !AddonBlocked;
 }
 
 /// <summary>
@@ -35,6 +37,11 @@ public sealed class Uploader(ApiClient api, Settings settings)
 
     /// <summary>Antal POST till ladda-upp (för tester och diagnostik).</summary>
     public int UploadCount { get; private set; }
+
+    /// <summary>Tidszonen som auktionsaddonerna räknar dagar i (spelarens; tester sätter en fast).</summary>
+    public TimeZoneInfo AuctionTimeZone { get; set; } = TimeZoneInfo.Local;
+    /// <summary>"I dag" för urvalet av auktionsdagar (null = <see cref="AuctionData.Today"/>; tester sätter en fast dag).</summary>
+    public Func<DateOnly>? AuctionToday { get; set; }
 
     public static TimeSpan Backoff(int attempts) =>
         TimeSpan.FromSeconds(Math.Min(3600, 30 * Math.Pow(2, Math.Max(0, attempts - 1))));
@@ -142,6 +149,9 @@ public sealed class Uploader(ApiClient api, Settings settings)
                     settings.Save();
                 }
 
+            if (settings.ShareAuctionPrices && SafeFs.AuctionFilesAllowed)
+                await SyncAuctionsAsync(dir, report, ct);
+
             // Inga nätfel: nollställ backoff-kön (ett avvisat svar är inte ett nätfel och schemalägger inget).
             settings.RetryAttempts = 0;
             settings.NextRetryUtc = null;
@@ -167,6 +177,64 @@ public sealed class Uploader(ApiClient api, Settings settings)
         }
         finally { _gate.Release(); }
         return report;
+    }
+
+    /// <summary>
+    /// "Dela auktionspriser": läser Auctionator.lua/Auc-Stat-Simple.lua (bara om filen ändrats sedan sist), plockar ut
+    /// föremål, realm/fraktion, dag, lägsta pris per styck och antal (<see cref="IAuctionReader"/>) och skickar dagarna
+    /// från vattenmärket och framåt. Filen själv skickas aldrig. Nätfel kastas vidare (backoff som för övriga filer);
+    /// ett avvisat svar (4xx) markerar inget som skickat, så samma dagar skickas igen nästa gång.
+    /// </summary>
+    private async Task SyncAuctionsAsync(GameDir dir, SyncReport report, CancellationToken ct)
+    {
+        var today = AuctionToday?.Invoke() ?? AuctionData.Today(AuctionTimeZone);
+        foreach (var (file, reader) in WowLocator.AuctionFiles(dir))
+        {
+            var key = Privacy.FileKey(file);
+            var mtime = SafeFs.Stat(file)?.LastWriteUtc ?? DateTime.UtcNow;
+            byte[] bytes = ScoutStats.ReadShared(file);
+            var sha = ApiClient.Sha256Hex(bytes);
+            if (settings.AuctionSha.TryGetValue(key, out var prevSha) && prevSha == sha) continue;
+            var read = reader.Read(bytes, mtime, AuctionTimeZone);
+            if (!read.Complete) { report.FilesIncomplete++; continue; }
+            DateOnly? mark = settings.AuctionDay.TryGetValue(key, out var w)
+                && DateOnly.TryParseExact(w, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var wd) ? wd : null;
+            var rows = AuctionData.Select(read.Rows, mark, today);
+            if (rows.Count == 0)
+            {
+                UploadLog.Append("auktioner", 0, sha, $"nothing-new {reader.Source}" + (read.Problem is { } p ? " " + p : ""));
+                settings.AuctionSha[key] = sha;
+                settings.Save();
+                continue;
+            }
+            bool rejected = false;
+            int accepted = 0;
+            for (int i = 0; i < rows.Count && !rejected; i += AuctionData.ChunkRows)
+            {
+                var chunk = rows.GetRange(i, Math.Min(AuctionData.ChunkRows, rows.Count - i));
+                var payload = AuctionData.Payload(reader.Source, chunk);
+                var psha = ApiClient.Sha256Hex(payload);
+                try
+                {
+                    var res = await api.UploadAuctionsAsync(payload, ct);
+                    accepted += res.Accepted;
+                    UploadLog.Append("auktioner", payload.Length, psha, $"ok {reader.Source} rows={chunk.Count} accepted={res.Accepted} skipped={res.Skipped}");
+                }
+                catch (ApiException ex)
+                {
+                    UploadLog.Append("auktioner", payload.Length, psha, "error:" + ex.Code + (ex.Status is { } st ? ":" + (int)st : "")
+                        + (ex.ServerDetail is { } det ? " " + det : ""));
+                    if (!ex.Rejected) throw;
+                    report.Error ??= ex;
+                    rejected = true;
+                }
+            }
+            report.AuctionRows += accepted;
+            if (rejected) continue; // inte markerad som skickad – nytt försök när filen ändras eller appen startar om
+            settings.AuctionSha[key] = sha;
+            settings.AuctionDay[key] = rows.Max(r => r.Day).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            settings.Save();
+        }
     }
 
     private void Schedule(SyncReport report)

@@ -63,8 +63,21 @@ public sealed class LuaParser
     private int _line = 1;
 
     private readonly bool _bytes;
+    private readonly bool _raw;
 
-    private LuaParser(string source, bool bytes = false) { _s = source; _bytes = bytes; }
+    private LuaParser(string source, bool bytes = false, bool raw = false) { _s = source; _bytes = bytes; _raw = raw; }
+
+    /// <summary>
+    /// Som <see cref="ParseGlobals(byte[])"/>, men strängarna lämnas som råa byte (1 tecken = 1 byte, Latin-1) och
+    /// avkodas inte som UTF-8. Behövs för binära strängar, t.ex. Auctionators CBOR-kodade realmdata
+    /// (<see cref="AuctionatorReader"/>). Hämta byte med <c>Encoding.Latin1.GetBytes(s)</c>.
+    /// </summary>
+    public static Dictionary<string, object?> ParseGlobalsRaw(byte[] bytes)
+    {
+        int start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        var text = Encoding.Latin1.GetString(bytes, start, bytes.Length - start);
+        return ParseGlobalsCore(new LuaParser(text, bytes: true, raw: true));
+    }
 
     /// <summary>
     /// Parsar filens råa byte: strängar i SavedVariables är UTF-8-byte (även via \ddd-escapes),
@@ -79,7 +92,7 @@ public sealed class LuaParser
 
     private string Finish(string s)
     {
-        if (!_bytes) return s;
+        if (!_bytes || _raw) return s;
         foreach (var ch in s) if (ch > 0x7F) return Encoding.UTF8.GetString(Encoding.Latin1.GetBytes(s));
         return s;
     }

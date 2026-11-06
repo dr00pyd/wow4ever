@@ -21,6 +21,8 @@ public sealed class SafeFsException(string reason, string path) : ScoutException
 /// <item>Under vald spelkatalog (<see cref="SetGameDir"/>):
 ///   <c>Interface\AddOns\ForeverScout\**</c> (läsa/skriva – installation, inkl. ForeverScout.new/.old under bytet),
 ///   <c>WTF\Account\*\SavedVariables\ForeverScout.lua</c> (läsa),
+///   <c>WTF\Account\*\SavedVariables\Auctionator.lua</c> och <c>Auc-Stat-Simple.lua</c> (läsa – bara när "Dela
+///   auktionspriser" är på, <see cref="AuctionFilesAllowed"/>),
 ///   <c>Cache\ADB\*\DBCache.bin</c> (läsa),
 ///   samt kataloglistning av just de mellanliggande katalogerna (Interface, Interface\AddOns, WTF\Account,
 ///   WTF\Account\*\SavedVariables, Cache\ADB) för att hitta filerna.</item>
@@ -127,6 +129,19 @@ public static class SafeFs
         }
         if (real != null && Path.GetDirectoryName(real) is { } parent) AllowProbeRoot(parent);
         return real;
+    }
+
+    private static volatile bool _auctionFiles;
+
+    /// <summary>
+    /// Auktionsaddonernas prisfiler (<c>WTF\Account\*\SavedVariables\Auctionator.lua</c> och <c>Auc-Stat-Simple.lua</c>,
+    /// se <see cref="AuctionData.Readers"/>) får läsas BARA när användaren kryssat i "Dela auktionspriser" (av som
+    /// standard). Appen sätter det från inställningarna vid start och när de sparas; annars nekas filerna som alla andra.
+    /// </summary>
+    public static bool AuctionFilesAllowed
+    {
+        get => _auctionFiles;
+        set => _auctionFiles = value;
     }
 
     /// <summary>Lägger till en spelkatalog utan att ta bort andra (tester).</summary>
@@ -276,6 +291,7 @@ public static class SafeFs
             if (!Eq(r[3], "SavedVariables")) return null;
             if (n == 4) return Access.Probe;
             if (n == 5 && Eq(r[4], "ForeverScout.lua")) return Access.Read;
+            if (n == 5 && _auctionFiles && AuctionData.Readers.Any(a => Eq(r[4], a.FileName))) return Access.Read; // bara när delningen är på
             return null;
         }
         if (Eq(r[0], "Cache"))

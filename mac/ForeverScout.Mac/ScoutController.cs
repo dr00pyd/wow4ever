@@ -91,7 +91,7 @@ internal sealed class ScoutController : IDisposable
         TrayIcon.SetIcons(Application.Current!, [_tray]);
 
         _sync = new SyncCoordinator(
-            () => CurrentDir is { } d ? WowLocator.SavedVariableFiles(d) : [],
+            () => CurrentDir is { } d ? [.. WowLocator.SavedVariableFiles(d), .. WowLocator.AuctionFiles(d).Select(a => a.Path)] : [],
             async ct =>
             {
                 if (!AutoUploadActive || string.IsNullOrEmpty(Api.Key)) return;
@@ -144,6 +144,7 @@ internal sealed class ScoutController : IDisposable
     public void ApplyGameDir()
     {
         _gameRoot = null;
+        SafeFs.AuctionFilesAllowed = Settings.ShareAuctionPrices; // av som standard: då nekas auktionsaddonernas filer
         try
         {
             if (!string.IsNullOrEmpty(Settings.GameDir) && Settings.IsGameDirConfirmed() && WowLocator.IsUsableGameDir(Settings.GameDir))
@@ -337,6 +338,7 @@ internal sealed class ScoutController : IDisposable
         if (report.Error is { } e2) Log(TF("journal.error", now, Strings.Error(e2)), report.WillRetry ? Look.Warn : Look.Err);
         if (report.FilesUploaded > 0) Log(TF("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Look.Ok);
         if (report.HotfixStored > 0) Log(TF("journal.hotfix", now), Look.Ok);
+        if (report.AuctionRows > 0) Log(TF("journal.auctions", now, report.AuctionRows), Look.Ok);
         if (report.NothingToDo && !quietIfNothing) Log(TF("journal.nothing", now), Look.Muted);
         if (report.FilesUploaded > 0 || report.HotfixStored > 0) _window?.Flash(TF("done", report.FilesUploaded, report.HotfixStored));
         else if (report.NothingToDo && !quietIfNothing) _window?.Flash(T("nothing"));
@@ -529,6 +531,7 @@ internal sealed class ScoutController : IDisposable
         try
         {
             var oldLang = Settings.Language;
+            var oldAuction = Settings.ShareAuctionPrices;
             var f = new SettingsWindow(Settings, pickDir, LinkWithBrowser);
             var closed = new TaskCompletionSource();
             f.Closed += (_, _) => closed.TrySetResult();
@@ -537,6 +540,7 @@ internal sealed class ScoutController : IDisposable
             if (!f.Saved) return;
             if (f.Unlinked || oldLang != Settings.Language) { Restart(); return; }
             ApplyGameDir();
+            if (Settings.ShareAuctionPrices && !oldAuction) _sync.Notify(); // nyss påslaget: dela det som redan finns
             InstallBundledAddonIfNeeded();
             RefreshStats(force: true);
             UpdateStatus();
