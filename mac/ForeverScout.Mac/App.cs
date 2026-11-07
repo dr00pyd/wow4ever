@@ -69,11 +69,13 @@ internal sealed class App : Application
 
         var current = SelfUpdater.CurrentVersion.ToString(3);
         var (updated, updatedFrom) = SelfUpdater.DetectUpdate(s.Settings.JustUpdatedFrom, s.Settings.LastRunVersion, current, s.Restarted);
+        bool quiet = s.Settings.QuietUpdate; // automatisk uppdatering med stängt fönster: inget fönster över spelet
         s.Settings.JustUpdatedFrom = null;
+        s.Settings.QuietUpdate = false;
         s.Settings.LastRunVersion = current;
         s.Settings.Save();
-        if (updated) scout.AnnounceUpdate(updatedFrom);
-        await scout.StartAsync(showWindow: firstRun || s.Restarted || updated);
+        if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
+        await scout.StartAsync(showWindow: firstRun || (!quiet && (s.Restarted || updated)));
     }
 }
 

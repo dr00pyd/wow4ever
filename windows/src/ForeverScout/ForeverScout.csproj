@@ -15,9 +15,9 @@
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
 
     <!-- Versionsinfo i exe:n (minskar AV-falsklarm). -->
-    <Version>1.0.9</Version>
-    <FileVersion>1.0.9.0</FileVersion>
-    <AssemblyVersion>1.0.9.0</AssemblyVersion>
+    <Version>1.0.10</Version>
+    <FileVersion>1.0.10.0</FileVersion>
+    <AssemblyVersion>1.0.10.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>

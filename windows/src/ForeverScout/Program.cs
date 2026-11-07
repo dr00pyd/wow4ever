@@ -74,14 +74,16 @@ internal static class Program
         // (≤ 1.0.5 sätter ingen markör men startar med --restarted). Då visas fönstret i stället för bara fältikonen.
         var current = SelfUpdater.CurrentVersion.ToString(3);
         var (updated, updatedFrom) = SelfUpdater.DetectUpdate(settings.JustUpdatedFrom, settings.LastRunVersion, current, restarted);
+        bool quiet = settings.QuietUpdate; // automatisk uppdatering med stängt fönster: bara bubblan, inget fönster över spelet
         settings.JustUpdatedFrom = null;
+        settings.QuietUpdate = false;
         settings.LastRunVersion = current;
         settings.Save();
-        bool showWindow = firstRun || shots || restarted || updated; // annars: bara ikonen i fältet
+        bool showWindow = firstRun || shots || (!quiet && (restarted || updated)); // annars: bara ikonen i fältet
         scout.OnUi(async () =>
         {
             if (shots) { await Screenshots.Run(scout); return; }
-            if (updated) scout.AnnounceUpdate(updatedFrom);
+            if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
             await scout.StartAsync(showWindow);
         });
         Application.Run(scout);

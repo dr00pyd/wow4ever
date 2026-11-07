@@ -31,6 +31,8 @@ internal sealed class MainWindow : Window
     private readonly TextBlock _accepted = StatValue();
     private readonly StackPanel _mineDetail = new() { Spacing = 4 };
     private readonly StackPanel _journal = new() { Spacing = 6 };
+    /// <summary>"Addonen har inte sparat något än" – syns bara tills spelet sparat ForeverScout.lua första gången.</summary>
+    private readonly Border _help;
     private readonly TextBlock _footAddon = Look.Label("", 12);
     private readonly TextBlock _footUpload = Look.Label("", 12);
     private readonly TextBlock _footNext = Look.Label("", 12, Look.Muted);
@@ -104,7 +106,15 @@ internal sealed class MainWindow : Window
         AddCol(lower, Look.Panel(mine), 0);
         AddCol(lower, Look.Panel(journal), 1);
 
+        var help = new StackPanel { Spacing = 6 };
+        help.Children.Add(Look.Label(T("help.nosv.title"), 15, Look.GoldHi, FontWeight.Bold));
+        help.Children.Add(Look.Label(T("help.nosv.body"), 13, Look.Text));
+        _help = Look.Panel(help, Color.Parse("#2E2619"));
+        _help.BorderBrush = Look.B(Look.Gold);
+        _help.IsVisible = false;
+
         var body = new StackPanel { Spacing = 16, Margin = new Thickness(24, 20) };
+        body.Children.Add(_help);
         body.Children.Add(stats);
         body.Children.Add(Look.Panel(tableBox));
         body.Children.Add(lower);
@@ -228,6 +238,7 @@ internal sealed class MainWindow : Window
 
     public void ShowStats()
     {
+        _help.IsVisible = _app.CurrentDir != null && !_app.HasSavedVariables;
         var stats = _app.Stats;
         int total = 0;
         foreach (var (k, row) in _rows)

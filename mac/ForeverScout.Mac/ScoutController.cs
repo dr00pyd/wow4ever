@@ -319,6 +319,7 @@ internal sealed class ScoutController : IDisposable
         UpdateStatus();
         if (_uploader.RetryDue && AutoUploadActive) _sync.Notify();
         if (DateTime.UtcNow - _meAt > MeEvery) _ = RefreshMe();
+        if (DateTime.UtcNow - _versionAt > VersionEvery) _ = CheckUpdates(interactive: false);
     }
 
     // ------------------------------------------------------------------ uppladdning
@@ -358,11 +359,30 @@ internal sealed class ScoutController : IDisposable
 
     // ------------------------------------------------------------------ uppdateringar (signerade)
 
+    /// <summary>1.0.10: versionsinfon hämtas vid start och sedan med detta intervall (appen ligger ofta i menyraden i dagar).</summary>
+    private static readonly TimeSpan VersionEvery = TimeSpan.FromHours(3);
+    /// <summary>Efter så många misslyckade självuppdateringar i rad slutar appen försöka själv (menyn fungerar som förut).</summary>
+    private const int AutoUpdateMaxFailures = 3;
+    private DateTime _versionAt = DateTime.MinValue;
+    private bool _checking;
+    private string? _offered;
+
     /// <summary>
-    /// Addonen och spärrlistan: samma signerade versionsinfo som Windows (signature2). Appen själv (interaktivt):
+    /// Addonen och spärrlistan: samma signerade versionsinfo som Windows (signature2). Appen själv:
     /// mac-fälten verifierade med signature3, zip:en mot vår filsignatur, sedan Apples kodsignatur (MacBundleUpdater).
+    /// 1.0.10: en nyare app installeras utan fråga vid den tysta kontrollen – aldrig mitt i en uppladdning, och efter
+    /// <see cref="AutoUpdateMaxFailures"/> misslyckanden i rad bara som en rad i lägerjournalen. Menyn frågar som förut.
     /// </summary>
     public async Task CheckUpdates(bool interactive)
+    {
+        if (_checking) return;
+        _checking = true;
+        _versionAt = DateTime.UtcNow;
+        try { await CheckUpdatesCore(interactive); }
+        finally { _checking = false; }
+    }
+
+    private async Task CheckUpdatesCore(bool interactive)
     {
         try
         {
@@ -372,7 +392,6 @@ internal sealed class ScoutController : IDisposable
             Settings.Save();
             await UpdateAddon(release, interactive, announceBlocked: false, alsoBlocked: null);
             _sync.Notify();
-            if (!interactive) return;
 
             SignedRelease mac;
             try { mac = Settings.AcceptRelease(await Api.MacVersionAsync(UpdateKeys.PublicKeyPem)); }
@@ -380,20 +399,34 @@ internal sealed class ScoutController : IDisposable
             var newVersion = mac.Mac;
             if (mac.MacFile is null || !SelfUpdater.IsNewer(newVersion))
             {
-                await Dialogs.Info(_window, TF("update.none", SelfUpdater.CurrentVersion.ToString(3)));
+                if (interactive) await Dialogs.Info(_window, TF("update.none", SelfUpdater.CurrentVersion.ToString(3)));
                 return;
             }
+            if (!interactive && Uploading)
+            {
+                _versionAt = DateTime.UtcNow - VersionEvery + TimeSpan.FromMinutes(1); // försök igen om en minut
+                return;
+            }
+            if (!interactive && (Settings.UpdateFailures >= AutoUpdateMaxFailures || MacBundleUpdater.IsTranslocated(MacBundleUpdater.Bundle)))
+            {
+                // Har misslyckats flera gånger (eller körs direkt ur Hämtade filer): säg till en gång per version.
+                if (_offered != newVersion) { _offered = newVersion; Log(TF("update.available", newVersion), Look.Warn); }
+                return;
+            }
+            if (!interactive) Log(TF("journal.autoupdate", Strings.When(DateTime.UtcNow), newVersion), Look.Gold);
             if (MacBundleUpdater.IsTranslocated(MacBundleUpdater.Bundle)) throw new ScoutException(ErrorCodes.AppTranslocated);
             byte[] zip;
             try { zip = await Api.DownloadReleaseFileAsync(mac, ReleaseKind.Mac, UpdateKeys.PublicKeyPem, 600L * 1024 * 1024); }
             catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { throw new UpdateStepException(UpdateSteps.Download, ex, null); }
             var staged = await Task.Run(() => MacBundleUpdater.Stage(zip));
-            if (await Dialogs.YesNo(_window, TF("update.ready", newVersion)))
+            if (!interactive || await Dialogs.YesNo(_window, TF("update.ready", newVersion)))
             {
                 Settings.JustUpdatedFrom = SelfUpdater.CurrentVersion.ToString(3);
+                // Fönstret visas efter omstarten bara om det var öppet eller om användaren själv bad om uppdateringen.
+                Settings.QuietUpdate = !interactive && _window is not { IsVisible: true };
                 Settings.Save();
                 try { await Task.Run(() => MacBundleUpdater.Swap(staged)); }
-                catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.Save(); throw; }
+                catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.QuietUpdate = false; Settings.Save(); throw; }
                 UploadLog.Append("update", zip.Length, ApiClient.Sha256Hex(zip), $"ok swapped to {newVersion}");
                 Settings.UpdateFailures = 0;
                 Settings.Save();
@@ -491,10 +524,10 @@ internal sealed class ScoutController : IDisposable
     }
 
     /// <summary>Efter en uppdatering: fönstret fram, "Uppdaterad till …" och en rad i lägerjournalen och uploads.log.</summary>
-    public void AnnounceUpdate(string? from)
+    public void AnnounceUpdate(string? from, bool showWindow = true)
     {
         var to = SelfUpdater.CurrentVersion.ToString(3);
-        ShowWindow();
+        if (showWindow) ShowWindow();
         var now = Strings.When(DateTime.UtcNow);
         Log(from is null ? TF("journal.updated.to", now, to) : TF("journal.updated", now, from, to), Look.Ok);
         UploadLog.Append("update", 0, "-", from is null ? $"updated to {to}" : $"updated from {from} to {to}");

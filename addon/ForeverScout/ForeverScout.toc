@@ -3,7 +3,7 @@
 ## Notes: Collects NPC, mob, trainer, vendor, quest, object, mailbox, loot and flight data for guide.wow4ever.se. No character names, no realm.
 ## Notes-svSE: Samlar NPC-, mob-, tränar-, försäljar-, quest-, objekt-, brevlåde-, loot- och flygdata till guide.wow4ever.se. Inga karaktärsnamn, ingen realm.
 ## Author: WoW Forever LAN guild
-## Version: 1.0.5
+## Version: 1.0.6
 ## SavedVariables: ForeverScoutDB
 ## SavedVariablesPerCharacter: ForeverScoutOpt
 ## X-Website: https://guide.wow4ever.se/bidra

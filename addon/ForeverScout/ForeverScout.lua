@@ -12,7 +12,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.5"
+local VERSION = "1.0.6"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -1559,6 +1559,8 @@ local handlers = {
   PLAYER_LEVEL_UP = function() after(1, updateChar) end,
   SKILL_LINES_CHANGED = function() after(1, updateChar) end,
   PLAYER_LOGOUT = function() updateChar() end,
+  -- 1.0.6: one line in chat after login and /reload, so that players can see that the addon is loaded.
+  PLAYER_LOGIN = function() after(5, function() say(string.format(T().loaded or "%s", VERSION)) end) end,
 }
 
 local frame = CreateFrame and CreateFrame("Frame") or nil

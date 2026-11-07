@@ -36,6 +36,8 @@ internal sealed class MainForm : Form
     private readonly FlowLayoutPanel _mineDetail = Stack();
     private readonly FlowLayoutPanel _journal = Stack();
     private TableLayoutPanel _lower = null!;
+    /// <summary>"Addonen har inte sparat något än" – syns bara tills spelet sparat ForeverScout.lua första gången.</summary>
+    private RoundedPanel _help = null!;
     private TableLayoutPanel _stats = null!;
     // sidfot
     private readonly Label _footAddon = FootLabel();
@@ -101,6 +103,7 @@ internal sealed class MainForm : Form
 
         // Innehåll (rullbart i små fönster)
         var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, BackColor = Theme.Bg, Padding = new Padding(22, 18, 22, 14), AutoScroll = true };
+        body.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // hjälprutan (dold när data finns)
         body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         // Tabellen får exakt plats för rubrik + 7 rader; korten under tar resten (rullning i små fönster).
@@ -112,7 +115,9 @@ internal sealed class MainForm : Form
         _stats.Controls.Add(StatCard(S("dash.stat.collected"), _statCollected), 0, 0);
         _stats.Controls.Add(StatCard(S("dash.stat.last"), _statLast), 1, 0);
         _stats.Controls.Add(StatCard(S("dash.stat.points"), _statPoints), 2, 0);
-        body.Controls.Add(_stats, 0, 0);
+        _help = HelpCard();
+        body.Controls.Add(_help, 0, 0);
+        body.Controls.Add(_stats, 0, 1);
 
         var headRow = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
         headRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -123,19 +128,19 @@ internal sealed class MainForm : Form
         _addonPill.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
         headRow.Controls.Add(ht, 0, 0);
         headRow.Controls.Add(_addonPill, 1, 0);
-        body.Controls.Add(headRow, 0, 1);
+        body.Controls.Add(headRow, 0, 2);
 
         StyleGrid();
         var gridFrame = new RoundedPanel { Dock = DockStyle.Fill, FillColor = ColorTranslator.FromHtml("#201B20"), BorderColor = ColorTranslator.FromHtml("#4B3D41"), Radius = 8, Padding = new Padding(1), Margin = new Padding(0, 0, 0, 14) };
         gridFrame.Controls.Add(_grid);
-        body.Controls.Add(gridFrame, 0, 2);
+        body.Controls.Add(gridFrame, 0, 3);
 
         _lower = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Color.Transparent, Margin = Padding.Empty };
         _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
         _lower.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
         _lower.Controls.Add(MineCard(), 0, 0);
         _lower.Controls.Add(JournalCard(), 1, 0);
-        body.Controls.Add(_lower, 0, 3);
+        body.Controls.Add(_lower, 0, 4);
 
         // Sidfot
         var footer = new TableLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, ColumnCount = 3, BackColor = Theme.Footer, Padding = new Padding(20, 9, 20, 9) };
@@ -165,6 +170,16 @@ internal sealed class MainForm : Form
         var s = Stack();
         s.Controls.Add(new Label { Text = caption.ToUpper(Culture), AutoSize = true, Font = Theme.Ui(8.25f), ForeColor = ColorTranslator.FromHtml("#D0BEB2"), BackColor = Color.Transparent, Margin = Padding.Empty });
         s.Controls.Add(value);
+        card.Controls.Add(s);
+        return card;
+    }
+
+    private static RoundedPanel HelpCard()
+    {
+        var card = new RoundedPanel { FillColor = ColorTranslator.FromHtml("#2E2619"), BorderColor = Theme.Gold, Radius = 10, Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(16, 12, 16, 12), Margin = new Padding(0, 0, 0, 14), Visible = false };
+        var s = Stack();
+        s.Controls.Add(new Label { Text = S("help.nosv.title"), AutoSize = true, Font = Theme.Ui(10.5f, FontStyle.Bold), ForeColor = Theme.GoldHi, BackColor = Color.Transparent, Margin = Padding.Empty });
+        s.Controls.Add(new Label { Text = S("help.nosv.body"), AutoSize = true, MaximumSize = new Size(520, 0), Font = Theme.Ui(9.75f), ForeColor = Theme.Text, BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 0) });
         card.Controls.Add(s);
         return card;
     }
@@ -348,6 +363,7 @@ internal sealed class MainForm : Form
             i++;
         }
         _statCollected.Text = total.ToString("N0", Culture);
+        _help.Visible = _app.CurrentDir != null && !_app.HasSavedVariables;
         _grid.Invalidate();
         ShowLastUpload();
     }

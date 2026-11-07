@@ -63,6 +63,8 @@ public sealed class Settings
     public int UpdateFailures { get; set; }
     /// <summary>Sätts (till den gamla versionen) precis före Swap; den nya versionen visar då fönstret och "Uppdaterad till …".</summary>
     public string? JustUpdatedFrom { get; set; }
+    /// <summary>1.0.10: uppdateringen gjordes automatiskt medan fönstret var stängt – visa inte fönstret efter omstarten (spelet kan vara igång).</summary>
+    public bool QuietUpdate { get; set; }
     /// <summary>Versionen som körde senast (1.0.6+). Skiljer den sig från den som körs nu har appen uppdaterats.</summary>
     public string? LastRunVersion { get; set; }
     /// <summary>Från /api/bidrag/jag: poster som servern godtagit (summa av counts) resp. bekräftade (fältet "confirmed", om det finns).</summary>

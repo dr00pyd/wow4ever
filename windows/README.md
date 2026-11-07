@@ -225,6 +225,12 @@ Klienten installerar en ny exe eller addon-zip **bara** om den är signerad med 
      Dialogen förklarar felet i klartext, och efter två misslyckanden erbjuder den nedladdningssidan.
    - **Omstart:** den nya exe:n startas med `--restarted` och väntar på mutexen tills den gamla processen har
      avslutats.
+5. **Automatisk uppdatering (från 1.0.10, även Mac):** versionsinfon hämtas vid start och sedan var 3:e timme. En nyare
+   signerad klient installeras utan fråga, men aldrig mitt i en uppladdning (då väntar den en minut). Efter omstarten
+   visas bara bubblan "Uppdaterad till …". Fönstret öppnas bara om det var öppet eller om användaren själv valde
+   "Sök efter uppdateringar", så att inget hoppar upp över spelet (`Settings.QuietUpdate`). Efter 3 misslyckade
+   försök i rad (`UpdateFailures`) slutar appen försöka själv och erbjuder i stället uppdateringen (bubbla och meny).
+   Klienter ≤ 1.0.9 frågar bara vid start och måste uppdateras en sista gång själva.
 
 ## Publicera (två varianter av samma kod)
 ```powershell

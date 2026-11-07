@@ -75,10 +75,20 @@ local function fire(event, ...) frame.script(frame, event, ...) end
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.5", "addonversion 1.0.5")
+check(db.addon == "1.0.6", "addonversion 1.0.6")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
 for _, e in ipairs({ "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "MAIL_SHOW", "AUCTION_HOUSE_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
+end
+-- 1.0.6: en rad i chatten efter inloggning/reload, så att spelaren ser att addonen är laddad.
+do
+  local said = {}
+  local old = DEFAULT_CHAT_FRAME.AddMessage
+  DEFAULT_CHAT_FRAME.AddMessage = function(_, msg) said[#said + 1] = msg end
+  check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
+  fire("PLAYER_LOGIN")
+  DEFAULT_CHAT_FRAME.AddMessage = old
+  check(#said == 1 and said[1]:find("1.0.6", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------

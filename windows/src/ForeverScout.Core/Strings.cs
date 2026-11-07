@@ -211,7 +211,7 @@ public static class Strings
         ["dash.table.sub"] = ("Sånt som gör guiden bättre för alla äventyrare.", "Things that make the guide better for every adventurer."),
         ["col.status"] = ("Status", "Status"),
         ["st.nodata"] = ("Ingen data hittad", "No data found"),
-        ["st.waiting"] = ("Väntar på spelsparning", "Waiting for the game to save"),
+        ["st.waiting"] = ("Väntar på /reload", "Waiting for /reload"),
         ["st.ready"] = ("Redo att ladda upp", "Ready to upload"),
         ["st.uploading"] = ("Uppladdning pågår", "Uploading"),
         ["st.uploaded"] = ("Uppladdad ✓", "Uploaded ✓"),
@@ -231,6 +231,19 @@ public static class Strings
         ["journal.nothing"] = ("{0}: inget nytt att skicka", "{0}: nothing new to send"),
         ["journal.error"] = ("{0}: {1}", "{0}: {1}"),
         ["journal.waiting"] = ("Väntar på nästa spelsparning …", "Waiting for the next game save …"),
+        ["journal.autoupdate"] = ("{0}: uppdaterar till {1} …", "{0}: updating to {1} …"),
+        ["help.nosv.title"] = ("Addonen har inte sparat något än", "The addon hasn't saved anything yet"),
+        ["help.nosv.body"] = (
+            "WoW sparar addonens data först när du skriver /reload, loggar ut eller avslutar spelet.\n"
+            + "1. Installerades addonen medan WoW var igång? Avsluta WoW helt och starta det igen – nya addons läses bara in när spelet startar.\n"
+            + "2. Tryck på AddOns på karaktärsvalet och se att ForeverScout är ibockad.\n"
+            + "3. Skriv /scout i chatten. Svarar ForeverScout är addonen igång.\n"
+            + "4. Skriv /reload – inom någon minut syns datan här.",
+            "WoW saves the addon's data only when you type /reload, log out or quit the game.\n"
+            + "1. Was the addon installed while WoW was running? Quit WoW completely and start it again – new addons are only loaded when the game starts.\n"
+            + "2. Click AddOns on the character screen and check that ForeverScout is ticked.\n"
+            + "3. Type /scout in chat. If ForeverScout answers, the addon is running.\n"
+            + "4. Type /reload – within a minute the data shows up here."),
         ["humor.1"] = ("Scoutens anteckningar är säkrade!", "The scout's notes are safe!"),
         ["humor.2"] = ("Ännu en karta räddad från glömskan.", "Another map saved from oblivion."),
         ["humor.3"] = ("Värdshusvärden räknar fynden. Igen.", "The innkeeper is counting the finds. Again."),

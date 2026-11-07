@@ -343,6 +343,7 @@ internal sealed class ScoutApp : ApplicationContext
         UpdateStatus();
         if (_uploader.RetryDue && AutoUploadActive) _sync.Notify();
         if (DateTime.UtcNow - _meAt > MeEvery) await RefreshMe();
+        if (DateTime.UtcNow - _versionAt > VersionEvery) await CheckUpdates(interactive: false);
     }
 
     /// <summary>
@@ -387,8 +388,28 @@ internal sealed class ScoutApp : ApplicationContext
 
     // ------------------------------------------------------------------ uppdateringar (signerade)
 
-    /// <summary>Hämtar signerad versionsinfo; uppdaterar addonen vid behov, och (interaktivt) klienten.</summary>
+    /// <summary>1.0.10: versionsinfon hämtas vid start och sedan med detta intervall (appen ligger ofta i fältet i dagar).</summary>
+    private static readonly TimeSpan VersionEvery = TimeSpan.FromHours(3);
+    /// <summary>Efter så många misslyckade självuppdateringar i rad slutar appen försöka själv och erbjuder i stället uppdateringen.</summary>
+    private const int AutoUpdateMaxFailures = 3;
+    private DateTime _versionAt = DateTime.MinValue;
+    private bool _checking;
+
+    /// <summary>
+    /// Hämtar signerad versionsinfo; uppdaterar addonen vid behov och klienten. 1.0.10: en nyare signerad klient
+    /// installeras utan fråga (tyst kontroll) – aldrig mitt i en uppladdning, och efter <see cref="AutoUpdateMaxFailures"/>
+    /// misslyckanden i rad bara som erbjudande (bubbla och meny). Interaktivt (menyn) frågar appen som förut.
+    /// </summary>
     public async Task CheckUpdates(bool interactive)
+    {
+        if (_checking) return;
+        _checking = true;
+        _versionAt = DateTime.UtcNow;
+        try { await CheckUpdatesCore(interactive); }
+        finally { _checking = false; }
+    }
+
+    private async Task CheckUpdatesCore(bool interactive)
     {
         try
         {
@@ -400,39 +421,46 @@ internal sealed class ScoutApp : ApplicationContext
             // Efter en versionskontroll: försök igen med filer som servern tidigare avvisade (servern kan ha rättats).
             // Oförändrade, redan uppladdade filer skickas inte (sha256), så detta kostar inget annars.
             _sync.Notify();
-            if (!interactive)
-            {
-                // 1.0.9: säg till när en nyare app finns (en bubbla per start, menyn visar versionen) – inget laddas ner utan klick.
-                var available = release.VersionOf(BuildInfo.UpdateKind);
-                if (release.File(BuildInfo.UpdateKind) is not null && SelfUpdater.IsNewer(available))
-                {
-                    _miUpdate.Text = F("menu.update.to", available);
-                    _updateOffered = true;
-                    _tray.ShowBalloonTip(10000, "Forever Scout", F("update.available", available), ToolTipIcon.Info);
-                }
-                return;
-            }
 
             // Varje variant uppdaterar sig från sin egen fil: full → clientFile, lite → liteFile.
             var kind = BuildInfo.UpdateKind;
             var newVersion = release.VersionOf(kind);
             if (release.File(kind) is null || !SelfUpdater.IsNewer(newVersion))
             {
-                MessageBox.Show(_form, F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (interactive) MessageBox.Show(_form, F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            if (!interactive && Uploading)
+            {
+                _versionAt = DateTime.UtcNow - VersionEvery + TimeSpan.FromMinutes(1); // försök igen om en minut
+                return;
+            }
+            if (!interactive && Settings.UpdateFailures >= AutoUpdateMaxFailures)
+            {
+                // Har misslyckats flera gånger: erbjud i stället (en bubbla per version, menyn visar versionen).
+                _miUpdate.Text = F("menu.update.to", newVersion);
+                if (!_updateOffered)
+                {
+                    _updateOffered = true;
+                    _tray.ShowBalloonTip(10000, "Forever Scout", F("update.available", newVersion), ToolTipIcon.Info);
+                }
+                return;
+            }
+            if (!interactive) Log(F("journal.autoupdate", When(DateTime.UtcNow), newVersion), Theme.Gold);
             byte[] exe;
             try { exe = await Api.DownloadReleaseFileAsync(release, kind, UpdateKeys.PublicKeyPem, 400L * 1024 * 1024); }
             catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { throw new UpdateStepException(UpdateSteps.Download, ex, null); }
             // Stage och Swap gör blockerande omförsök (upp till ~15 s per steg) – kör dem utanför UI-tråden.
             await Task.Run(() => SelfUpdater.Stage(exe));
-            if (MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            if (!interactive || MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
-                // Markör för den nya versionen: visa fönstret och "Uppdaterad till …" efter omstarten.
+                // Markör för den nya versionen: "Uppdaterad till …" efter omstarten. Fönstret visas bara om det var
+                // öppet eller om användaren själv bad om uppdateringen – aldrig ovanpå spelet.
                 Settings.JustUpdatedFrom = SelfUpdater.CurrentVersion.ToString(3);
+                Settings.QuietUpdate = !interactive && _form is not { Visible: true };
                 Settings.Save();
                 try { await Task.Run(() => SelfUpdater.Swap()); }
-                catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.Save(); throw; }
+                catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.QuietUpdate = false; Settings.Save(); throw; }
                 UploadLog.Append("update", exe.Length, ApiClient.Sha256Hex(exe), $"ok swapped to {newVersion}");
                 Settings.UpdateFailures = 0;
                 Settings.Save();
@@ -624,10 +652,10 @@ internal sealed class ScoutApp : ApplicationContext
     /// Efter en uppdatering: fönstret fram, "Uppdaterad till …" i fönstret och som ballong, och en rad i lägerjournalen
     /// och uploads.log. <paramref name="from"/> = den gamla versionen (null om okänd, t.ex. uppdaterad från ≤ 1.0.5).
     /// </summary>
-    public void AnnounceUpdate(string? from)
+    public void AnnounceUpdate(string? from, bool showWindow = true)
     {
         var to = SelfUpdater.CurrentVersion.ToString(3);
-        ShowWindow();
+        if (showWindow) ShowWindow();
         var now = When(DateTime.UtcNow);
         Log(from is null ? F("journal.updated.to", now, to) : F("journal.updated", now, from, to), Theme.Ok);
         UploadLog.Append("update", 0, "-", from is null ? $"updated to {to}" : $"updated from {from} to {to}");
