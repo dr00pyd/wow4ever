@@ -17,6 +17,12 @@ internal static class Program
         bool shots = args.Contains("--screenshots");
 
         ScoutApp? app = null;
+        CrashGuard.Install(() => app); // före alla fönster: oväntade fel loggas i stället för .NET:s feldialog
+#if DEBUG
+        double stress = StressTest.Minutes(args); // --stress[=minuter], bara Debug
+#else
+        const double stress = 0;
+#endif
         void Activate() => app?.OnUi(() => app.ShowWindow());
         bool restarted = args.Contains("--restarted");
         // Efter en uppdatering/omstart: vänta på att den gamla processen släpper mutexen (den avslutar sig själv).
@@ -79,14 +85,21 @@ internal static class Program
         settings.QuietUpdate = false;
         settings.LastRunVersion = current;
         settings.Save();
-        bool showWindow = firstRun || shots || (!quiet && (restarted || updated)); // annars: bara ikonen i fältet
+        bool showWindow = firstRun || shots || stress > 0 || (!quiet && (restarted || updated)); // annars: bara ikonen i fältet
         scout.OnUi(async () =>
         {
             if (shots) { await Screenshots.Run(scout); return; }
             if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
-            await scout.StartAsync(showWindow);
+            var start = scout.StartAsync(showWindow);
+#if DEBUG
+            if (stress > 0) StressTest.Start(scout, stress);
+#endif
+            await start;
         });
         Application.Run(scout);
+#if DEBUG
+        if (stress > 0) return StressTest.ExitCode;
+#endif
         return 0;
     }
 }

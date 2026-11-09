@@ -169,6 +169,51 @@ vid fokus och statuspiller.
 - All text finns på svenska och engelska (`ForeverScout.Core/Strings.cs`). Core-fel bär koder (`ErrorCodes`) som
   översätts där. Testerna kräver sv och en för varje nyckel och varje felkod.
 
+## Minne (1.0.11)
+Appen ligger i fältet i dagar, så det som syns i Aktivitetshanteraren är arbetsmängden i fältläget. 1.0.10 läste
+varje fil (SavedVariables, `DBCache.bin`, auktionsfilerna) i sin helhet via en `MemoryStream` för att räkna ut
+sha256 – även när filen var oförändrad – och GC:n lämnade sällan tillbaka minnet. Med en hotfix-cache på 8 MB och en
+Auctionator-fil på 19 MB låg 1.0.10 på ~150 MB i fältet. Åtgärder:
+- **Strömmad hash** (`SafeFs.Sha256Hex`, 64 KB i taget): en oförändrad fil känns igen utan att läsas in. Hela filen
+  läses bara när den har ändrats, och då direkt in i en array av rätt storlek (`SafeFs.ReadAllBytes`).
+- **`MemoryTrim`** (`Support.cs`): komprimerande GC + `SetProcessWorkingSetSize(-1,-1)` efter starten, efter en
+  uppladdning och en versionskontroll när fönstret är dolt, och när fönstret stängs till fältet. Fönstret disposas då
+  och byggs upp igen vid nästa öppning. I fältet lämnas oanvända sidor tillbaka högst en gång per minut.
+- **NLS i stället för ICU** (`System.Globalization.UseNls`, csproj): samma sv/en-formatering, icu.dll laddas inte.
+- Provat men inte med: `System.GC.ConserveMemory` (ingen mätbar vinst), ReadyToRun (+3 MB och +13 MB fil).
+
+Mät med `Get-Process ForeverScout` (WorkingSet64) eller prestandaräknaren `\Process(ForeverScout)\Working Set -
+Private` – den senare är kolumnen **Minne** i Aktivitetshanteraren. Golvet för en tom WinForms-app med samma
+publiceringsinställningar är ~34 MB arbetsmängd i fältet utan trimning; efter trimning ligger Forever Scout under det.
+
+## Fönstrets livscykel och oväntade fel (1.0.11)
+- **Stäng avslutar.** X → Stäng (eller "Fråga inte igen" = Stäng) köade tidigare `Exit` på fönstret som just stängdes
+  (`this.BeginInvoke`). WinForms kastar köade anrop när fönstret disposas, så `Exit` kördes aldrig: appen levde kvar
+  utan fönster och nästa tick kraschade i `ShowStats` (tabellen töms av Dispose → `ArgumentOutOfRangeException`).
+  Samma kod finns i 1.0.3–1.0.10, så felet är inte nytt i 1.0.11. Nu köas `Exit` via appens egen kontroll (`ScoutApp.OnUi`).
+- `ScoutApp` når fönstret bara via `Live` (aldrig ett rivet fönster); `_form` nollas när fönstret disposas, hur det än
+  sker. Dialoger får bara ett levande, synligt fönster som ägare, och alla modala dialoger går via `ScoutApp.Modal`:
+  medan en dialog är öppen göms och rivs fönstret inte (det minimeras bara som vanligt).
+- `HideToTray` körs inte igen inifrån sitt eget handtagsbyte, och `ShowFromTray` återställer ett minimerat fönster
+  före `ShowInTaskbar` – annars oändlig rekursion (stack overflow) om fönstret öppnades medan det var minimerat.
+- **CrashGuard:** ett oväntat undantag på UI-tråden (tick, händelse, async-fortsättning) visar inte .NET:s feldialog
+  och avslutar inte appen. Det skrivs i `uploads.log` (`error`: typ, HResult och metodnamn – aldrig meddelandet, som
+  kan innehålla sökvägar) och som en rad i lägerjournalen (samma fel högst en gång per minut). Fel på andra trådar
+  loggas (`crash`) innan processen avslutas.
+
+## Stresstest (bara Debug)
+`--stress[=minuter]` kör en slumpad sekvens mot den riktiga appen: öppna, minimera, stäng till fältet (med och utan
+frågan), öppna igen direkt, F5/Ladda upp, Sök efter uppdatering, Inställningar, Visa vad som skickas, fältmenyn,
+storleksändring – med korta tick-intervall. Dialoger stängs automatiskt (aldrig Avsluta, inloggning eller länkar).
+Flaggan finns inte i Release-byggen. Skriptet bygger en isolerad datakatalog, en falsk WoW-mapp och en död API-adress,
+ändrar filerna under körningen och mäter minnet var 10:e sekund:
+```powershell
+dotnet build src\ForeverScout -c Debug
+powershell -ExecutionPolicy Bypass -File tools\stress.ps1 -Minutes 10           # memory.csv, summary.txt, data\stress.log
+powershell -ExecutionPolicy Bypass -File tools\stress.ps1 -Scenario close-exit  # X → Stäng ska avsluta appen
+powershell -ExecutionPolicy Bypass -File tools\stress.ps1 -Screenshots          # samma miljö, --screenshots
+```
+
 ## Bygga och testa
 Kräver .NET SDK 10.
 

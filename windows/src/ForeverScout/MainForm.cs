@@ -64,7 +64,8 @@ internal sealed class MainForm : Form
         Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) HideToTray(); else Reflow(); };
         FormClosing += OnClosing;
         _flashTimer.Tick += (_, _) => { _flashTimer.Stop(); _flash = null; ShowStatus(); };
-        KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) { e.Handled = true; _ = _app.UploadNow(quietIfNothing: false); } };
+        // async: ett oväntat fel når CrashGuard (som knappen) i stället för att försvinna i en obevakad Task.
+        KeyDown += async (_, e) => { if (e.KeyCode == Keys.F5) { e.Handled = true; await _app.UploadNow(quietIfNothing: false); } };
 
         ShowStats();
         ShowContribution();
@@ -349,6 +350,8 @@ internal sealed class MainForm : Form
 
     public void ShowStats()
     {
+        // Rivet fönster eller tabell utan rader (under Dispose): inget att visa – kastar annars och avslutar appen.
+        if (IsDisposed || Disposing || _grid.IsDisposed || _grid.Rows.Count < Enum.GetValues<DataKind>().Length) return;
         var stats = _app.Stats;
         int i = 0, total = 0;
         foreach (DataKind k in Enum.GetValues<DataKind>())
@@ -477,9 +480,12 @@ internal sealed class MainForm : Form
 
     public void ShowFromTray()
     {
+        // Återställ FÖRE ShowInTaskbar: den byter handtag, och ett minimerat fönster får då en Resize mitt i
+        // handtagsbytet → HideToTray → nytt handtagsbyte … (oändlig rekursion, stack overflow).
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         ShowInTaskbar = true;
         if (!Visible) Show();
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; // dolt fönster: det riktiga läget återställs först när det syns
         Activate();
         BringToFront();
         _app.RefreshStats(force: false);
@@ -487,10 +493,21 @@ internal sealed class MainForm : Form
         ShowStatus();
     }
 
+    private bool _hiding;
+
     private void HideToTray()
     {
-        Hide();
-        ShowInTaskbar = false;
+        // Redan dolt, eller anropad igen inifrån handtagsbytet nedan (ShowInTaskbar → Resize): inget att göra.
+        // Medan en dialog är öppen minimeras fönstret bara som vanligt – det är dialogens ägare och får inte döljas eller
+        // byta handtag under den.
+        if (_hiding || !Visible || _app.ModalOpen) return;
+        _hiding = true;
+        try
+        {
+            Hide();
+            ShowInTaskbar = false;
+        }
+        finally { _hiding = false; }
         _app.OnHiddenToTray();
     }
 
@@ -509,15 +526,19 @@ internal sealed class MainForm : Form
         if (decision == CloseDecision.Ask)
         {
             using var dlg = new CloseDialog();
-            dlg.ShowDialog(this);
+            _app.Modal(() => dlg.ShowDialog(this));
             decision = dlg.Choice;
             CloseBehavior.Remember(_app.Settings, decision, dlg.DontAskAgain);
             _app.Settings.Save();
+            if (IsDisposed) return; // fönstret revs medan frågan visades (t.ex. Avsluta i fältmenyn)
         }
         switch (decision)
         {
             case CloseDecision.Exit:
-                if (!_app.IsExiting) BeginInvoke(_app.Exit);
+                // Avsluta via appens egen kö – INTE this.BeginInvoke: fönstret stängs och disposas direkt efter den här
+                // händelsen, och då kastar WinForms anrop som köats på det. Exit kördes aldrig: appen levde vidare med ett
+                // rivet fönster och kraschade i nästa tick (1.0.11, ArgumentOutOfRangeException i ShowStats).
+                if (!_app.IsExiting) _app.OnUi(_app.Exit);
                 break;
             case CloseDecision.Tray:
                 e.Cancel = true;
@@ -553,7 +574,14 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _flashTimer.Dispose(); _gearMenu.Dispose(); }
+        if (disposing)
+        {
+            // Fönstrets egna timers och menyer: inget får ticka eller öppnas mot ett rivet fönster.
+            _flashTimer.Stop();
+            _flashTimer.Dispose();
+            _gearMenu.Close();
+            _gearMenu.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
@@ -522,11 +522,56 @@ public static class SafeFs
         BeforeOpen?.Invoke(p);
         using var h = File.OpenHandle(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         VerifyOpened(h, p, scope);
-        using var fs = new FileStream(h, FileAccess.Read);
+        using var fs = new FileStream(h, FileAccess.Read, bufferSize: 1);
         if (fs.Length > maxBytes) throw new ScoutException(ErrorCodes.FileTooLarge);
+        // 1.0.11: rakt in i en array av rätt storlek (förr: MemoryStream som dubblar kapaciteten + ToArray-kopia –
+        // en fil på 20 MB kostade ~50 MB i topp). Växer filen under läsningen läses resten som förut.
+        var buf = new byte[fs.Length];
+        int read = 0;
+        while (read < buf.Length)
+        {
+            int n = fs.Read(buf, read, buf.Length - read);
+            if (n == 0) break;
+            read += n;
+        }
+        if (read < buf.Length) return buf.AsSpan(0, read).ToArray(); // filen krympte
+        int next = fs.ReadByte();
+        if (next < 0) return buf;
         using var ms = new MemoryStream();
+        ms.Write(buf);
+        ms.WriteByte((byte)next);
         fs.CopyTo(ms);
+        if (ms.Length > maxBytes) throw new ScoutException(ErrorCodes.FileTooLarge);
         return ms.ToArray();
+    }
+
+    /// <summary>
+    /// SHA-256 (hex, gemener) av filens innehåll, läst i block om 64 KB ur samma kontrollerade handtag som
+    /// <see cref="ReadAllBytes"/> – så att en oförändrad fil kan kännas igen utan att hela filen hamnar i minnet.
+    /// </summary>
+    public static string Sha256Hex(string path, long maxBytes = 64L * 1024 * 1024)
+    {
+        var (p, scope) = CheckScoped(path, Access.Read, isDir: false);
+        BeforeOpen?.Invoke(p);
+        using var h = File.OpenHandle(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        VerifyOpened(h, p, scope);
+        using var fs = new FileStream(h, FileAccess.Read, bufferSize: 1);
+        if (fs.Length > maxBytes) throw new ScoutException(ErrorCodes.FileTooLarge);
+        using var sha = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        var block = System.Buffers.ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            long total = 0;
+            int n;
+            while ((n = fs.Read(block, 0, block.Length)) > 0)
+            {
+                total += n;
+                if (total > maxBytes) throw new ScoutException(ErrorCodes.FileTooLarge);
+                sha.AppendData(block, 0, n);
+            }
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(block); }
+        return Convert.ToHexStringLower(sha.GetHashAndReset());
     }
 
     /// <summary>Läser text som UTF-8; en ev. BOM tas bort (t.ex. om settings.json sparats av ett annat program).</summary>

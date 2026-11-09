@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -169,4 +169,32 @@ internal static class AddonBundle
     }
 
     public static string? Version => AddonInstaller.BundledVersion(Files);
+}
+
+/// <summary>
+/// Minne (1.0.11). Appen ligger i fältet i dagar; det användaren ser i Aktivitetshanteraren är arbetsmängden
+/// (working set). När fönstret dolts eller en uppladdning är klar städas heapen (inklusive det som parsern av
+/// SavedVariables lämnat) och de sidor som inte längre används lämnas tillbaka till systemet. Allt hämtas in igen
+/// vid behov – ingen funktion påverkas.
+/// </summary>
+internal static class MemoryTrim
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
+
+    /// <summary>Full städning: komprimerande GC och sedan arbetsmängden – när fönstret döljs och efter uppladdning.</summary>
+    public static void Trim()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        Release();
+    }
+
+    /// <summary>Bara arbetsmängden: -1/-1 = "lämna tillbaka de sidor som inte används just nu" (pseudo-handtaget
+    /// behöver inte stängas). Sidorna hämtas in igen från standby-listan när de behövs – inget läses om från disk.</summary>
+    public static void Release() => SetProcessWorkingSetSize(GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1));
 }

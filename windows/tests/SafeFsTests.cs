@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using ForeverScout.Core;
 
 namespace ForeverScout.Tests;
@@ -30,6 +30,24 @@ public sealed class SafeFsTests : IDisposable
     }
 
     private string G(params string[] p) => Path.Combine([_game, .. p]);
+
+    [Fact]
+    public void Sha256HexStreamsAndMatchesReadAllBytes()
+    {
+        // 1.0.11: uppladdaren känner igen oförändrade filer med en strömmad hash – den måste vara identisk med hashen
+        // av hela innehållet, och ReadAllBytes (exakt storlek, ingen MemoryStream) måste ge filen byte för byte.
+        var path = G("WTF", "Account", "ACC", "SavedVariables", "ForeverScout.lua");
+        var data = new byte[300_000]; // flera 64 KB-block + en rest
+        new Random(42).NextBytes(data);
+        File.WriteAllBytes(path, data);
+        Assert.Equal(data, SafeFs.ReadAllBytes(path));
+        Assert.Equal(ApiClient.Sha256Hex(data), SafeFs.Sha256Hex(path));
+        File.WriteAllBytes(path, []);
+        Assert.Empty(SafeFs.ReadAllBytes(path));
+        Assert.Equal(ApiClient.Sha256Hex(Array.Empty<byte>()), SafeFs.Sha256Hex(path));
+        Assert.Throws<ScoutException>(() => SafeFs.Sha256Hex(path, maxBytes: -1));
+        Assert.Throws<SafeFsException>(() => SafeFs.Sha256Hex(G("WTF", "Account", "ACC", "SavedVariables", "Other.lua")));
+    }
 
     [Fact]
     public void AllowedReadsWork()

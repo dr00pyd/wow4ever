@@ -123,6 +123,7 @@ public static class Strings
         ["update.notstarted"] = ("Den nya versionen startade inte. Forever Scout fortsätter med den gamla – försök igen, eller hämta den nya versionen från nedladdningssidan.", "The new version did not start. Forever Scout keeps running the old one – try again, or get the new version from the download page."),
         ["update.openpage"] = ("Självuppdateringen har misslyckats flera gånger. Vill du öppna nedladdningssidan och hämta den nya versionen där?", "Self-update has failed several times. Do you want to open the download page and get the new version there?"),
         ["journal.updatefail"] = ("{0}: uppdateringen misslyckades ({1})", "{0}: update failed ({1})"),
+        ["journal.internal"] = ("{0}: internt fel ({1}) – Forever Scout fortsätter, detaljer i uploads.log", "{0}: internal error ({1}) – Forever Scout keeps running, details in uploads.log"),
         // Första start
         ["first.title"] = ("Välkommen till Forever Scout", "Welcome to Forever Scout"),
         ["first.intro"] = ("Scout samlar in NPC:er, quests, tränare och loot medan du spelar och skickar dem till Forever-guiden när du avslutar spelet. Inget konto- eller karaktärsnamn skickas.", "Scout collects NPCs, quests, trainers and loot while you play and sends them to the Forever guide when you quit the game. No account or character names are sent."),

@@ -1,4 +1,4 @@
-namespace ForeverScout.Core;
+﻿namespace ForeverScout.Core;
 
 public sealed class SyncReport
 {
@@ -62,9 +62,12 @@ public sealed class Uploader(ApiClient api, Settings settings)
             foreach (var file in WowLocator.SavedVariableFiles(dir))
             {
                 var key = Privacy.FileKey(file);
+                // 1.0.11: oförändrad fil känns igen med en strömmad hash – hela filen läses bara när den har ändrats.
+                settings.UploadedSha.TryGetValue(key, out var prev);
+                if (!force && prev != null && prev == SafeFs.Sha256Hex(file)) { report.FilesUnchanged++; continue; }
                 byte[] bytes = ScoutStats.ReadShared(file);
                 var sha = ApiClient.Sha256Hex(bytes);
-                if (!force && settings.UploadedSha.TryGetValue(key, out var prev) && prev == sha) { report.FilesUnchanged++; continue; }
+                if (!force && prev == sha) { report.FilesUnchanged++; continue; }
                 var peek = Peek(bytes);
                 if (!peek.Complete)
                 {
@@ -131,10 +134,12 @@ public sealed class Uploader(ApiClient api, Settings settings)
                 foreach (var file in WowLocator.HotfixFiles(dir))
                 {
                     var key = Privacy.FileKey(file);
+                    // 1.0.11: hotfix-cachen kan vara flera MB – oförändrad känns igen med strömmad hash utan att läsas in.
+                    if (settings.HotfixSha.TryGetValue(key, out var prev) && prev == SafeFs.Sha256Hex(file, ApiClient.MaxHotfixBytes * 2)) continue;
                     // Kopiera först (spelet kan ha filen öppen), hasha sedan.
                     byte[] bytes = ScoutStats.ReadShared(file);
                     var sha = ApiClient.Sha256Hex(bytes);
-                    if (settings.HotfixSha.TryGetValue(key, out var prev) && prev == sha) continue;
+                    if (prev == sha) continue;
                     HotfixResult res;
                     try { res = await api.UploadHotfixAsync(bytes, ct); }
                     catch (ApiException ex)
@@ -192,9 +197,11 @@ public sealed class Uploader(ApiClient api, Settings settings)
         {
             var key = Privacy.FileKey(file);
             var mtime = SafeFs.Stat(file)?.LastWriteUtc ?? DateTime.UtcNow;
+            // 1.0.11: auktionsfilerna är ofta tiotals MB – oförändrad fil känns igen utan att läsas in i minnet.
+            if (settings.AuctionSha.TryGetValue(key, out var prevSha) && prevSha == SafeFs.Sha256Hex(file)) continue;
             byte[] bytes = ScoutStats.ReadShared(file);
             var sha = ApiClient.Sha256Hex(bytes);
-            if (settings.AuctionSha.TryGetValue(key, out var prevSha) && prevSha == sha) continue;
+            if (prevSha == sha) continue;
             var read = reader.Read(bytes, mtime, AuctionTimeZone);
             if (!read.Complete) { report.FilesIncomplete++; continue; }
             DateOnly? mark = settings.AuctionDay.TryGetValue(key, out var w)

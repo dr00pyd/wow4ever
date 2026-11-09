@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using ForeverScout.Core;
 using static ForeverScout.Core.Strings;
 
@@ -33,7 +33,7 @@ internal sealed class ScoutApp : ApplicationContext
     {
         _journal.Insert(0, (DateTime.Now, text, color));
         if (_journal.Count > 6) _journal.RemoveAt(_journal.Count - 1);
-        _form?.ShowJournal();
+        Live?.ShowJournal();
     }
 
     private int _humor;
@@ -134,6 +134,7 @@ internal sealed class ScoutApp : ApplicationContext
         await RefreshMe();
         await CheckUpdates(interactive: false); // signerad addon + spärrlistan (tyst)
         _sync.Notify(); // ny data sedan förra gången? (samma väg som filändringar – inga dubbletter)
+        if (Live is not { Visible: true }) MemoryTrim.Trim(); // starten är klar – allt som bara behövdes då släpps
     }
 
     private bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
@@ -149,7 +150,7 @@ internal sealed class ScoutApp : ApplicationContext
     public void ShowAbout()
     {
         var text = F("about.text", SelfUpdater.CurrentVersion.ToString(3), S(BuildInfo.IsLite ? "about.variant.lite" : "about.variant.full"), Api.BaseUri.Host);
-        MessageBox.Show(_form is { Visible: true } ? _form : null, text, S("about.title"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        Message(text, S("about.title"), MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     public GameDir? CurrentDir => _gameRoot is null ? null : new GameDir(_gameRoot, Path.GetFileName(_gameRoot));
@@ -192,8 +193,7 @@ internal sealed class ScoutApp : ApplicationContext
     /// </summary>
     private void ConfirmFoundGameDir(string dir)
     {
-        var owner = _form is { Visible: true } ? _form : null;
-        var answer = MessageBox.Show(owner, F("gamedir.confirm", dir), S("gamedir.confirm.title"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        var answer = Message(F("gamedir.confirm", dir), S("gamedir.confirm.title"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (answer == DialogResult.Yes)
         {
             Settings.GameDir = dir;
@@ -228,7 +228,7 @@ internal sealed class ScoutApp : ApplicationContext
 
     public void RefreshStats(bool force)
     {
-        if (CurrentDir is not { } dir) { Stats = new ScoutStats(); HasSavedVariables = false; _form?.ShowStats(); return; }
+        if (CurrentDir is not { } dir) { Stats = new ScoutStats(); HasSavedVariables = false; Live?.ShowStats(); return; }
         var sv = WowLocator.SavedVariableFiles(dir);
         HasSavedVariables = sv.Count > 0;
         var hf = Settings.UploadHotfix ? WowLocator.HotfixFiles(dir) : [];
@@ -251,7 +251,7 @@ internal sealed class ScoutApp : ApplicationContext
             catch (SafeFsException) { }
         }
         Stats = stats;
-        _form?.ShowStats();
+        Live?.ShowStats();
     }
 
     /// <summary>Poängen ändras också när andra bekräftar ens fynd – hämta därför med jämna mellanrum, inte bara efter egna uppladdningar.</summary>
@@ -273,7 +273,7 @@ internal sealed class ScoutApp : ApplicationContext
             if (me.Recent is { Count: > 0 } recent && Settings.LastConfirmed.Count == 0)
                 Settings.LastConfirmed = recent.Select(ToConfirmed).OfType<ConfirmedItem>().Take(5).ToList();
             Settings.Save();
-            _form?.ShowContribution();
+            Live?.ShowContribution();
             UpdateStatus();
         }
         catch (ApiException) { /* offline – visa det vi har */ }
@@ -325,7 +325,7 @@ internal sealed class ScoutApp : ApplicationContext
         if (Settings.Points is int p) tip += " · " + F("tray.tooltip.points", p.ToString("N0", Culture));
         tip += "\n" + StatusText;
         _tray.Text = tip.Length > 127 ? tip[..126] + "…" : tip;
-        _form?.ShowStatus();
+        Live?.ShowStatus();
     }
 
     private void UpdateMenu()
@@ -337,6 +337,10 @@ internal sealed class ScoutApp : ApplicationContext
 
     // ------------------------------------------------------------------ händelser
 
+    private DateTime _trimAt = DateTime.MinValue;
+    /// <summary>I fältet: lämna tillbaka oanvända sidor högst så ofta (billigt – ingen GC, bara arbetsmängden).</summary>
+    private static readonly TimeSpan TrimEvery = TimeSpan.FromMinutes(1);
+
     private async Task OnTick()
     {
         RefreshStats(force: false);
@@ -344,6 +348,11 @@ internal sealed class ScoutApp : ApplicationContext
         if (_uploader.RetryDue && AutoUploadActive) _sync.Notify();
         if (DateTime.UtcNow - _meAt > MeEvery) await RefreshMe();
         if (DateTime.UtcNow - _versionAt > VersionEvery) await CheckUpdates(interactive: false);
+        if (Live is not { Visible: true } && !_uploadingUi && DateTime.UtcNow - _trimAt > TrimEvery)
+        {
+            _trimAt = DateTime.UtcNow;
+            MemoryTrim.Release();
+        }
     }
 
     /// <summary>
@@ -370,7 +379,7 @@ internal sealed class ScoutApp : ApplicationContext
         if (report.FilesUploaded > 0 || report.HotfixStored > 0)
             Toast(null, F("done", report.FilesUploaded, report.HotfixStored), onlyIfHidden: true);
         else if (report.NothingToDo && !quietIfNothing)
-            _form?.Flash(S("nothing"));
+            Live?.Flash(S("nothing"));
 
         if (report.NewConfirmed.Count > 0)
         {
@@ -381,9 +390,11 @@ internal sealed class ScoutApp : ApplicationContext
         if (report.AddonBlocked) await UpdateAddonAfterBlock();
 
         RefreshStats(force: true);
-        _form?.ShowContribution();
+        Live?.ShowContribution();
         UpdateStatus();
         if (report.FilesUploaded > 0) await RefreshMe();
+        // Parsern och uppladdningen lämnar skräp på heapen; i fältet syns det bara som minne. Städa när fönstret är dolt.
+        if (Live is not { Visible: true }) MemoryTrim.Trim();
     }
 
     // ------------------------------------------------------------------ uppdateringar (signerade)
@@ -405,7 +416,7 @@ internal sealed class ScoutApp : ApplicationContext
         if (_checking) return;
         _checking = true;
         _versionAt = DateTime.UtcNow;
-        try { await CheckUpdatesCore(interactive); }
+        try { await CheckUpdatesCore(interactive); if (Live is not { Visible: true }) MemoryTrim.Trim(); }
         finally { _checking = false; }
     }
 
@@ -427,7 +438,7 @@ internal sealed class ScoutApp : ApplicationContext
             var newVersion = release.VersionOf(kind);
             if (release.File(kind) is null || !SelfUpdater.IsNewer(newVersion))
             {
-                if (interactive) MessageBox.Show(_form, F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (interactive) Message(F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             if (!interactive && Uploading)
@@ -452,12 +463,12 @@ internal sealed class ScoutApp : ApplicationContext
             catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { throw new UpdateStepException(UpdateSteps.Download, ex, null); }
             // Stage och Swap gör blockerande omförsök (upp till ~15 s per steg) – kör dem utanför UI-tråden.
             await Task.Run(() => SelfUpdater.Stage(exe));
-            if (!interactive || MessageBox.Show(_form, F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            if (!interactive || Message(F("update.ready", newVersion), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 // Markör för den nya versionen: "Uppdaterad till …" efter omstarten. Fönstret visas bara om det var
                 // öppet eller om användaren själv bad om uppdateringen – aldrig ovanpå spelet.
                 Settings.JustUpdatedFrom = SelfUpdater.CurrentVersion.ToString(3);
-                Settings.QuietUpdate = !interactive && _form is not { Visible: true };
+                Settings.QuietUpdate = !interactive && Live is not { Visible: true };
                 Settings.Save();
                 try { await Task.Run(() => SelfUpdater.Swap()); }
                 catch (UpdateStepException) { Settings.JustUpdatedFrom = null; Settings.QuietUpdate = false; Settings.Save(); throw; }
@@ -487,14 +498,14 @@ internal sealed class ScoutApp : ApplicationContext
             };
             if (Settings.UpdateFailures >= 2)
             {
-                if (MessageBox.Show(_form, msg + "\n\n" + S("update.openpage"), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                if (Message(msg + "\n\n" + S("update.openpage"), S("app"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
                     Links.Open(Api, Links.Download(Api));
             }
-            else MessageBox.Show(_form, msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else Message(msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException)
         {
-            if (interactive) MessageBox.Show(_form, F("update.fail", Error(ex)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (interactive) Message(F("update.fail", Error(ex)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             // Tyst kontroll: nät-/serverfel visas inte som fel (uppladdningen har egen status).
         }
     }
@@ -537,36 +548,70 @@ internal sealed class ScoutApp : ApplicationContext
                 var wait = F("addon.blocked.wait", installed);
                 if (_errorText != wait) Log(F("journal.error", When(DateTime.UtcNow), wait), Theme.Warn);
                 SetError(wait);
-                if (interactive) MessageBox.Show(_form, wait, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                if (interactive) Message(wait, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
         }
         var zip = await Api.DownloadReleaseFileAsync(release, ReleaseKind.Addon, UpdateKeys.PublicKeyPem, 20 * 1024 * 1024);
         AddonInstaller.Install(dir, AddonInstaller.FromZip(zip));
         _errorText = null;
         var msg = announceBlocked ? F("addon.blocked", release.Addon) : F("update.addon", release.Addon);
-        if (interactive) MessageBox.Show(_form, msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        if (interactive) Message(msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         else Toast("Forever Scout", msg);
-        _form?.ShowStatus();
+        Live?.ShowStatus();
     }
 
     // ------------------------------------------------------------------ fönster
 
     public void ShowWindow()
     {
-        if (_form is null || _form.IsDisposed) _form = new MainForm(this);
-        _form.ShowFromTray();
+        if (Live is not { } f)
+        {
+            f = new MainForm(this);
+            // Hur fönstret än rivs (Dispose i fältet, Stäng, Windows-avstängning) pekar _form aldrig på ett rivet fönster.
+            f.Disposed += (s, _) => { if (ReferenceEquals(_form, s)) _form = null; };
+            _form = f;
+        }
+        f.ShowFromTray();
         if (DateTime.UtcNow - _meAt > TimeSpan.FromMinutes(1)) _ = RefreshMe(); // färska poäng när fönstret öppnas
     }
 
-    public MainForm? Window => _form;
+    public MainForm? Window => Live;
+
+    /// <summary>Fönstret om det finns och inte är rivet – alla uppdateringar av fönstret går via den här.</summary>
+    private MainForm? Live => _form is { IsDisposed: false, Disposing: false } f ? f : null;
+
+    /// <summary>Ägare till dialoger: bara ett levande, synligt fönster (en MessageBox med ett rivet fönster som ägare kastar).</summary>
+    private IWin32Window? DialogOwner => Live is { Visible: true } f ? f : null;
+
+    private int _modal;
+
+    /// <summary>Minst en modal dialog (MessageBox, ShowDialog) är öppen. Fönstret rivs inte och göms inte under tiden: det
+    /// kan vara dialogens ägare, och koden som visade dialogen fortsätter efteråt.</summary>
+    public bool ModalOpen => _modal > 0;
+
+    /// <summary>Visar en modal dialog. Alla modala dialoger i appen går hit (se <see cref="ModalOpen"/>).</summary>
+    public T Modal<T>(Func<T> show)
+    {
+        _modal++;
+        try { return show(); }
+        finally
+        {
+            _modal--;
+            if (_modal == 0) OnUi(ReleaseHiddenWindow); // fönstret kan ha gömts medan dialogen var öppen
+        }
+    }
+
+    private DialogResult Message(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon) =>
+        Modal(() => MessageBox.Show(DialogOwner, text, caption, buttons, icon));
+
+    private DialogResult Dialog(Form f) => Modal(() => DialogOwner is { } o ? f.ShowDialog(o) : f.ShowDialog());
 
     public void OpenSettings(bool pickDir)
     {
         var oldLang = Settings.Language;
         var oldAuction = Settings.ShareAuctionPrices;
         using var f = new SettingsForm(Settings, pickDir, LinkWithBrowser);
-        var owner = _form is { Visible: true } ? _form : null;
-        if ((owner is null ? f.ShowDialog() : f.ShowDialog(owner)) != DialogResult.OK) return;
+        if (Dialog(f) != DialogResult.OK || _exiting) return;
         if (f.Unlinked || oldLang != Settings.Language) { Restart(); return; }
         ApplyGameDir();
         if (Settings.ShareAuctionPrices && !oldAuction) _sync.Notify(); // nyss påslaget: dela det som redan finns
@@ -582,28 +627,43 @@ internal sealed class ScoutApp : ApplicationContext
     public async Task<Contributor?> LinkWithBrowser(IWin32Window? owner)
     {
         using var f = new BrowserLinkForm(Api, Settings.ContributorName, who => ContributorStore.Save(who, Api, Settings, KeyStore.Save));
-        owner ??= _form is { Visible: true } ? _form : null;
-        if (owner is null) f.ShowDialog(); else f.ShowDialog(owner);
+        if (owner is Control { IsDisposed: true } or Control { Visible: false }) owner = null;
+        owner ??= DialogOwner;
+        Modal(() => owner is null ? f.ShowDialog() : f.ShowDialog(owner));
         if (f.Result is not { } linked) return null;
         Log(F("link.ok", linked.Name), Theme.Ok);
-        _form?.ShowContribution();
+        Live?.ShowContribution();
         UpdateStatus();
         await RefreshMe();
         return linked;
     }
 
-    /// <summary>Engångstips när fönstret göms första gången.</summary>
+    /// <summary>Fönstret har gömts i fältet. Engångstips första gången.</summary>
     public void OnHiddenToTray()
     {
+        // Fönstret (kontroller, dubbelbuffrar, logotyp) behövs inte i fältet: släpp det och bygg upp det igen vid
+        // nästa öppning (ShowWindow skapar ett nytt). Körs efter att stängningshändelsen är klar (BeginInvoke).
+        OnUi(ReleaseHiddenWindow);
         if (Settings.TrayHintShown) return;
         Settings.TrayHintShown = true;
         Settings.Save();
         _tray.ShowBalloonTip(6000, S("tray.hint"), S("tray.hint.body"), ToolTipIcon.Info);
     }
 
+    /// <summary>Rivs det dolda fönstret och trimmar minnet – men aldrig medan en dialog är öppen (tas om när den stängs).</summary>
+    private void ReleaseHiddenWindow()
+    {
+        if (_modal > 0 || _exiting) return;
+        if (_form is not { IsDisposed: false, Visible: false } f) return;
+        // Nolla referensen FÖRE Dispose: inget som körs under eller efter Dispose får nå det halvt rivna fönstret.
+        _form = null;
+        f.Dispose();
+        MemoryTrim.Trim();
+    }
+
     public void Toast(string? title, string text, bool onlyIfHidden = false)
     {
-        if (onlyIfHidden && _form is { Visible: true }) { _form.Flash(text); return; }
+        if (onlyIfHidden && Live is { Visible: true } f) { f.Flash(text); return; }
         _tray.ShowBalloonTip(8000, title ?? "Forever Scout", text, ToolTipIcon.Info);
     }
 
@@ -612,14 +672,14 @@ internal sealed class ScoutApp : ApplicationContext
     {
         var text = UploadPreview.Build(Api, CurrentDir, Settings);
         using var f = new PayloadForm(text);
-        if (_form is { Visible: true }) f.ShowDialog(_form); else f.ShowDialog();
+        Dialog(f);
     }
 
     // ------------------------------------------------------------------ skärmbilder (bara --screenshots)
 
-    internal void SimulateUploading(bool on) { _simUploading = on; UpdateStatus(); _form?.ShowStats(); }
-    internal void SimulateError(string? text) { _errorText = text; if (text != null) Log(F("journal.error", When(DateTime.UtcNow), text), Theme.Err); UpdateStatus(); _form?.ShowStats(); }
-    internal void SimulateEmpty() { Stats = new ScoutStats(); HasSavedVariables = false; Settings.Points = null; Settings.Rank = null; Settings.AcceptedTotal = null; Settings.LastConfirmed = new(); Settings.LastUploadUtc = null; _journal.Clear(); _form?.ShowStats(); _form?.ShowContribution(); _form?.ShowJournal(); UpdateStatus(); }
+    internal void SimulateUploading(bool on) { _simUploading = on; UpdateStatus(); Live?.ShowStats(); }
+    internal void SimulateError(string? text) { _errorText = text; if (text != null) Log(F("journal.error", When(DateTime.UtcNow), text), Theme.Err); UpdateStatus(); Live?.ShowStats(); }
+    internal void SimulateEmpty() { Stats = new ScoutStats(); HasSavedVariables = false; Settings.Points = null; Settings.Rank = null; Settings.AcceptedTotal = null; Settings.LastConfirmed = new(); Settings.LastUploadUtc = null; _journal.Clear(); Live?.ShowStats(); Live?.ShowContribution(); Live?.ShowJournal(); UpdateStatus(); }
 
     public ContextMenuStrip TrayMenu { get { UpdateMenu(); return _trayMenu; } }
 
@@ -659,7 +719,7 @@ internal sealed class ScoutApp : ApplicationContext
         var now = When(DateTime.UtcNow);
         Log(from is null ? F("journal.updated.to", now, to) : F("journal.updated", now, from, to), Theme.Ok);
         UploadLog.Append("update", 0, "-", from is null ? $"updated to {to}" : $"updated from {from} to {to}");
-        _form?.Flash(F("updated.to", to), 15000);
+        Live?.Flash(F("updated.to", to), 15000);
         _tray.ShowBalloonTip(8000, "Forever Scout", F("updated.to", to), ToolTipIcon.Info);
     }
 

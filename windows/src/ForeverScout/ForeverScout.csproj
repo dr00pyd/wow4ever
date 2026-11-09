@@ -15,9 +15,9 @@
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
 
     <!-- Versionsinfo i exe:n (minskar AV-falsklarm). -->
-    <Version>1.0.10</Version>
-    <FileVersion>1.0.10.0</FileVersion>
-    <AssemblyVersion>1.0.10.0</AssemblyVersion>
+    <Version>1.0.11</Version>
+    <FileVersion>1.0.11.0</FileVersion>
+    <AssemblyVersion>1.0.11.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>
@@ -42,6 +42,16 @@
     <!-- Lite: saknas .NET 10 Desktop Runtime visar apphosten Windows standarddialog med nedladdningslänk. -->
     <RollForward Condition="'$(ScoutVariant)' == 'lite'">LatestMinor</RollForward>
   </PropertyGroup>
+
+  <!-- Minne (1.0.11): globalisering via Windows egna NLS i stället för ICU – samma sv/en-formatering, icu.dll laddas
+       inte (uppmätt −2,4 MB arbetsmängd). Kan stängas av med -p:ScoutUseNls=false. System.GC.ConserveMemory och
+       ReadyToRun provades också: ingen vinst respektive +3 MB, därför inte med. -->
+  <PropertyGroup>
+    <ScoutUseNls Condition="'$(ScoutUseNls)' == ''">true</ScoutUseNls>
+  </PropertyGroup>
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.Globalization.UseNls" Value="true" Condition="'$(ScoutUseNls)' == 'true'" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ForeverScout.Core\ForeverScout.Core.csproj" />
