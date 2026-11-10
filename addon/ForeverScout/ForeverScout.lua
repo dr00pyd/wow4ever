@@ -9,10 +9,12 @@
 --  * Never stored: character name, realm, account, full GUIDs (only the creature/object id, field 6, and from
 --    1.0.5 a short non-reversible tag of a corpse GUID, see guidTag). Nothing about other players: target/mouseover
 --    only records creatures that no player controls.
+--  * Never a position inside instances. From 1.0.7 only WHICH instance (its map ID) goes with loot, kills and mobs
+--    seen there, so the site can list an instance's mobs and boss loot (instanceMap).
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.6"
+local VERSION = "1.0.7"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -27,6 +29,7 @@ local MOB_AREAS = 8           -- approximate spots per mob; full = no more (keep
 local MOB_RADIUS = 5          -- map-% : a sighting this close to a saved area (same map) is the same area
 local MOB_REPEAT = 120        -- seconds before the same GUID is looked at again (memory only, never saved)
 local MOB_GUIDS = 2000        -- remembered GUIDs before the memory is cleared
+local MOB_INSTANCES = 4       -- 1.0.7: instance map IDs per mob
 local MAX_MAIL = 300          -- mailbox spots, oldest dropped
 local MAIL_RADIUS = 1         -- map-% : a mailbox this close to a saved one (same map) is the same mailbox
 -- 1.0.5
@@ -248,6 +251,16 @@ local function positionAllowed()
   if clean(try(UnitOnTaxi, "player")) then return false end
   if clean(try(UnitInVehicle, "player")) then return false end
   return true
+end
+
+-- 1.0.7: the instance's map ID (8th value of GetInstanceInfo) inside a dungeon, raid or battleground, else nil.
+-- Only which instance – never where in it.
+local function instanceMap()
+  if not clean(try(IsInInstance)) then return nil end
+  local info = { try(GetInstanceInfo) }
+  local id = num(info[8])
+  if id and id > 0 and id == floor(id) then return id end
+  return nil
 end
 
 local function playerPos()
@@ -895,6 +908,7 @@ local function recentGather()
 end
 
 local function pushLoot(entry)
+  entry.im = entry.im or instanceMap()   -- 1.0.7: the instance it dropped in (nil outside)
   local loot = db.loot
   loot[#loot + 1] = entry
   while #loot > MAX_LOOT do table.remove(loot, 1) end
@@ -1194,6 +1208,14 @@ local function noteMob(unit)
     rec = {}; db.mobs[id] = rec; session.mobCount = session.mobCount + 1
   end
   rec.n = name
+  -- 1.0.7: instances the mob was seen in (map IDs, at most MOB_INSTANCES) – the only location kept inside one.
+  local inst, newInst = instanceMap(), false
+  if inst then
+    rec.i = type(rec.i) == "table" and rec.i or {}
+    local known = false
+    for _, v in ipairs(rec.i) do if v == inst then known = true end end
+    if not known and #rec.i < MOB_INSTANCES then rec.i[#rec.i + 1] = inst; newInst = true end
+  end
   -- 1.0.5: no level while drunk (the client then shows other levels).
   local l = not drunk() and num(try(UnitLevel, unit)) or nil
   if l and l > 0 then
@@ -1207,7 +1229,7 @@ local function noteMob(unit)
   local c = str(try(UnitClassification, unit))
   if c and CLASSIFICATIONS[c] then rec.c = c end
   if ct then rec.ct = ct end
-  local changed = addArea(rec) or isNew
+  local changed = addArea(rec) or isNew or newInst
   if near then
     session.mobNear[guid] = true
     if addExact(rec) then changed = true end
@@ -1250,7 +1272,7 @@ local function watchTarget()
   if unitFlag(UnitIsTapDenied, "target") ~= false then return end
   remember(session.killed, guid)
   session.alive[guid] = nil
-  local entry = { t = floor(now() / 86400) * 86400, id = id, h = guidTag(guid), grp = inGroup() or nil }
+  local entry = { t = floor(now() / 86400) * 86400, id = id, h = guidTag(guid), grp = inGroup() or nil, im = instanceMap() }
   after(KILL_LOOT_DELAY, function()
     if CanLootUnit then
       local has = clean(try(CanLootUnit, guid))

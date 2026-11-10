@@ -49,7 +49,7 @@ const full = await sharp(SRC).trim({ threshold: 4 }).png().toBuffer();
 if (!MAC_ONLY) {
   await sharp(full).toFile(join(WIN, "assets", "logo-full.png"));
   await sharp(full).resize({ width: 360 }).png({ compressionLevel: 9 }).toFile(join(RES, "logo-header.png"));
-  await sharp(full).resize({ width: 800, withoutEnlargement: true }).webp({ quality: 86, alphaQuality: 90 }).toFile(join(WEB, "logo-full.webp"));
+  await sharp(full).resize({ width: 520, withoutEnlargement: true }).webp({ quality: 85, alphaQuality: 90 }).toFile(join(WEB, "logo-full.webp"));
 }
 
 // Elden och vedträna (i originalets koordinater, 1536×1024), centrerat. Muggens vapen börjar vid x ≈ 865 och yxan

@@ -24,7 +24,12 @@ function GetTime() return clock end
 function time() return 1793750000 + clock end
 function GetBuildInfo() return "1.60.1", "70790", "Nov 1 2026", 16001 end
 function GetLocale() return "enUS" end
-function IsInInstance() return false end
+local instance = nil   -- 1.0.7: instansens kart-id när spelaren är i en instans
+function IsInInstance() return instance ~= nil end
+function GetInstanceInfo()
+  if not instance then return "Eastern Kingdoms", "none", 0, "", 0, 0, false, 0 end
+  return "The Hall of Thanes", "party", 1, "Normal", 5, 0, false, instance
+end
 function UnitOnTaxi() return false end
 function UnitInVehicle() return false end
 function InCombatLockdown() return combat end
@@ -75,7 +80,7 @@ local function fire(event, ...) frame.script(frame, event, ...) end
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.6", "addonversion 1.0.6")
+check(db.addon == "1.0.7", "addonversion 1.0.7")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
 for _, e in ipairs({ "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "MAIL_SHOW", "AUCTION_HOUSE_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
@@ -88,7 +93,7 @@ do
   check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
   fire("PLAYER_LOGIN")
   DEFAULT_CHAT_FRAME.AddMessage = old
-  check(#said == 1 and said[1]:find("1.0.6", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
+  check(#said == 1 and said[1]:find("1.0.7", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------
@@ -302,6 +307,32 @@ check(#db.loot == before, "bossen används bara en gång")
 fire("ENCOUNTER_END", 664, "Magmadar", 9, 40, 0)
 lootWindow({ { item = 16802, guid = SECRET } })
 check(#db.loot == before, "förlorat encounter ger ingen boss")
+
+check(hid.im == nil and boss.im == nil, "utanför instans: inget instans-id på loot")
+
+-- 1.0.7: i en instans följer instansens kart-id med loot, kills och mobbar – aldrig en position
+instance = 3065
+local HALL = "Creature-0-4372-3065-77-250001-0000000043"
+units.target = { guid = HALL, name = "Plunder", dead = true, level = 30 }
+lootWindow({ { item = 2589, guid = HALL } })
+local hl = db.loot[#db.loot]
+check(hl.src == "npc" and hl.id == 250001 and hl.im == 3065 and hl.m == nil and hl.x == nil, "instans: loot får im, ingen position")
+units.target = nil
+fire("ENCOUNTER_END", 3494, "Plunder", 1, 5, 1)
+lootWindow({ { item = 2590, guid = SECRET } })
+check(db.loot[#db.loot].src == "boss" and db.loot[#db.loot].id == 3494 and db.loot[#db.loot].im == 3065, "instans: bossloot får im")
+clock = clock + 300
+local GHOST = "Creature-0-4372-3065-77-250002-0000000044"
+units.mouseover = { guid = GHOST, name = "Ghostly Attendant", level = 30, class = "normal", ctype = "Undead", ctypeId = 6, reaction = 4 }
+fire("UPDATE_MOUSEOVER_UNIT")
+local gm = db.mobs[250002]
+check(gm and gm.n == "Ghostly Attendant" and gm.i and gm.i[1] == 3065 and #gm.i == 1, "instans: mobben får instansens id")
+check(gm and (gm.a == nil or #gm.a == 0) and (gm.e == nil or #gm.e == 0), "instans: ingen mobplats")
+clock = clock + 300
+fire("UPDATE_MOUSEOVER_UNIT")
+check(#gm.i == 1, "samma instans sparas en gång")
+units.mouseover = nil
+instance = nil
 
 -- Kills: sedd levande som mål, sedan död med vår tagg; CanLootUnit efter en sekund
 local K1 = "Creature-0-4372-0-48-113-0000000101"
