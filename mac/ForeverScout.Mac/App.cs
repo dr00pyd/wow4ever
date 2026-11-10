@@ -15,6 +15,9 @@ internal sealed class App : Application
     /// <summary>Satt av Program innan Avalonia startar.</summary>
     internal static StartupState? Startup { get; set; }
 
+    /// <summary>Linux: visa fönstret vid start (alla skrivbord har inte fältikoner). macOS: alltid false.</summary>
+    internal static bool ShowAtStart { get; set; }
+
     public override void Initialize()
     {
         Styles.Add(new FluentTheme());
@@ -75,7 +78,7 @@ internal sealed class App : Application
         s.Settings.LastRunVersion = current;
         s.Settings.Save();
         if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
-        await scout.StartAsync(showWindow: firstRun || (!quiet && (s.Restarted || updated)));
+        await scout.StartAsync(showWindow: ShowAtStart || firstRun || (!quiet && (s.Restarted || updated)));
     }
 }
 

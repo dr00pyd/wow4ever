@@ -11,6 +11,7 @@
 //       [--setup <ForeverScout-Setup-x.y.z.exe>] [--setup-version x.y.z]
 //       [--addon <ForeverScout-addon.zip>] [--addon-version x.y.z] [--out public/scout] [--block 0.9.0,0.9.1]
 //       [--mac <ForeverScout-mac.zip>] [--mac-version x.y.z] [--allow-unnotarized] [--dmg <ForeverScout-x.y.z.dmg>]
+//       [--linux <ForeverScout-x86_64.AppImage>] [--linux-version x.y.z]
 //       Kopierar filerna till <out> (ForeverScout.exe, ForeverScout-addon.zip, ForeverScout-mac.zip) och skriver
 //       <out>/version.json. En del som inte anges (t.ex. bara --addon) behålls från befintlig version.json med sin
 //       gamla filsignatur.
@@ -28,6 +29,9 @@
 //     Nya klienter verifierar signature2 och väljer fil efter variant (full → clientFile, lite → liteFile).
 //   - Lite-filens filsignatur: kind "lite". Installationsprogrammet (setup, setupFile, setupSha256, setupSig) ingår
 //     också i signature2 (kind "setup") – det används inte för uppdateringar, bara för nedladdningssidan.
+//   - signature5 (Linux-klienten och nedladdningssidan) över SIGNED_FIELDS_5 = SIGNED_FIELDS_4 + linux, linuxFile,
+//     linuxSha256, linuxSig: AppImage med den fristående Linux-appen (client/linux), filsignatur kind "linux".
+//     Skrivs alltid (saknat = null). Windows- och macOS-klienterna läser den inte; signature–signature4 är oförändrade.
 //   - signature4 (bara nedladdningssidan) över SIGNED_FIELDS_4 = SIGNED_FIELDS_3 + dmg, dmgFile, dmgSha256, dmgSig:
 //     DMG:n med samma notariserade app (client/mac/build.sh --dmg), filsignatur kind "dmg", version = --mac-version.
 //     Inga klienter läser den – Mac-appen uppdaterar sig med zip:en (signature3).
@@ -52,6 +56,8 @@ const MAC_FIELDS = ["mac", "macFile", "macSha256", "macSig"];
 const SIGNED_FIELDS_3 = [...SIGNED_FIELDS_2, ...MAC_FIELDS].sort();
 const DMG_FIELDS = ["dmg", "dmgFile", "dmgSha256", "dmgSig"];
 const SIGNED_FIELDS_4 = [...SIGNED_FIELDS_3, ...DMG_FIELDS].sort();
+const LINUX_FIELDS = ["linux", "linuxFile", "linuxSha256", "linuxSig"];
+const SIGNED_FIELDS_5 = [...SIGNED_FIELDS_4, ...LINUX_FIELDS].sort();
 const VERSION = /^\d{1,4}(\.\d{1,6}){0,3}([-+][0-9A-Za-z.]{1,20})?$/;
 const CLIENT_FILE = "ForeverScout.exe";
 const LITE_FILE = "ForeverScout-lite.exe";
@@ -59,6 +65,7 @@ const SETUP_FILE = "ForeverScout-Setup.exe";
 const ADDON_FILE = "ForeverScout-addon.zip";
 const MAC_FILE = "ForeverScout-mac.zip";
 const DMG_FILE = "ForeverScout-mac.dmg";
+const LINUX_FILE = "ForeverScout-x86_64.AppImage";
 
 function args(argv) {
   const out = {};
@@ -86,7 +93,8 @@ export function canonical(obj, fields = SIGNED_FIELDS) {
 export const canonical2 = (obj) => canonical(obj, SIGNED_FIELDS_2);
 export const canonical3 = (obj) => canonical(obj, SIGNED_FIELDS_3);
 export const canonical4 = (obj) => canonical(obj, SIGNED_FIELDS_4);
-export { SIGNED_FIELDS, SIGNED_FIELDS_2, SIGNED_FIELDS_3, SIGNED_FIELDS_4 };
+export const canonical5 = (obj) => canonical(obj, SIGNED_FIELDS_5);
+export { SIGNED_FIELDS, SIGNED_FIELDS_2, SIGNED_FIELDS_3, SIGNED_FIELDS_4, SIGNED_FIELDS_5 };
 
 /** Namnen på posterna i en zip (centralkatalogen; zip64 stöds inte – macOS-zip:en är långt under 4 GB). */
 export function zipEntryNames(buf) {
@@ -146,7 +154,9 @@ function genkey(dir) {
 function release(a) {
   if (typeof a.key !== "string") fail("--key <privat.pem> krävs");
   if (typeof a.version !== "string" || !VERSION.test(a.version)) fail("--version x.y.z krävs");
-  if (!a.exe && !a["exe-lite"] && !a.setup && !a.addon && !a.mac && !a.dmg) fail("ange --exe, --exe-lite, --setup, --addon, --mac och/eller --dmg");
+  if (!a.exe && !a["exe-lite"] && !a.setup && !a.addon && !a.mac && !a.dmg && !a.linux) fail("ange --exe, --exe-lite, --setup, --addon, --mac, --dmg och/eller --linux");
+  const linuxVersion = typeof a["linux-version"] === "string" ? a["linux-version"] : a.version;
+  if (!VERSION.test(linuxVersion)) fail("ogiltig --linux-version");
   const macVersion = typeof a["mac-version"] === "string" ? a["mac-version"] : a.version;
   if (!VERSION.test(macVersion)) fail("ogiltig --mac-version");
   const setupVersion = typeof a["setup-version"] === "string" ? a["setup-version"] : a.version;
@@ -166,7 +176,7 @@ function release(a) {
   const prev = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
 
   const m = { v: 1 };
-  for (const k of SIGNED_FIELDS_4) if (k !== "v" && k !== "issued" && prev[k] !== undefined) m[k] = prev[k];
+  for (const k of SIGNED_FIELDS_5) if (k !== "v" && k !== "issued" && prev[k] !== undefined) m[k] = prev[k];
 
   if (a.exe) {
     if (typeof a.exe !== "string" || !existsSync(a.exe)) fail(`hittar inte --exe ${a.exe}`);
@@ -220,9 +230,18 @@ function release(a) {
     copyFileSync(a.dmg, join(out, DMG_FILE));
     Object.assign(m, { dmg: macVersion, dmgFile: DMG_FILE, dmgSha256: h, dmgSig: signB64(privateKey, fileMessage("dmg", macVersion, h)) });
   }
+  if (a.linux) {
+    if (typeof a.linux !== "string" || !existsSync(a.linux)) fail(`hittar inte --linux ${a.linux}`);
+    const buf = readFileSync(a.linux);
+    // En AppImage är en ELF-fil (startaren) följd av en squashfs-avbild ("hsqs") med appen.
+    if (buf.length < 1024 * 1024 || buf.readUInt32BE(0) !== 0x7f454c46 || buf.indexOf(Buffer.from("hsqs")) < 0) fail("--linux ska vara en AppImage (client/linux/packaging/make-appimage.sh)");
+    const h = sha256(buf);
+    copyFileSync(a.linux, join(out, LINUX_FILE));
+    Object.assign(m, { linux: linuxVersion, linuxFile: LINUX_FILE, linuxSha256: h, linuxSig: signB64(privateKey, fileMessage("linux", linuxVersion, h)) });
+  }
   // Behållna delar måste fortfarande verifiera mot samma nyckel.
-  for (const [kind, ver, sh, sig] of [["client", m.client, m.sha256, m.clientSig], ["lite", m.lite, m.liteSha256, m.liteSig], ["setup", m.setup, m.setupSha256, m.setupSig], ["addon", m.addon, m.addonSha256, m.addonSig], ["mac", m.mac, m.macSha256, m.macSig], ["dmg", m.dmg, m.dmgSha256, m.dmgSig]]) {
-    if (ver && !verifyB64(publicKey, fileMessage(kind, ver, sh), sig)) fail(`befintlig ${kind}-signatur stämmer inte med nyckeln – signera om med --${kind === "client" ? "exe" : kind === "lite" ? "exe-lite" : kind === "setup" ? "setup" : kind === "mac" ? "mac" : kind === "dmg" ? "dmg" : "addon"}`);
+  for (const [kind, ver, sh, sig] of [["client", m.client, m.sha256, m.clientSig], ["lite", m.lite, m.liteSha256, m.liteSig], ["setup", m.setup, m.setupSha256, m.setupSig], ["addon", m.addon, m.addonSha256, m.addonSig], ["mac", m.mac, m.macSha256, m.macSig], ["dmg", m.dmg, m.dmgSha256, m.dmgSig], ["linux", m.linux, m.linuxSha256, m.linuxSig]]) {
+    if (ver && !verifyB64(publicKey, fileMessage(kind, ver, sh), sig)) fail(`befintlig ${kind}-signatur stämmer inte med nyckeln – signera om med --${kind === "client" ? "exe" : kind === "lite" ? "exe-lite" : kind === "setup" ? "setup" : kind === "mac" ? "mac" : kind === "dmg" ? "dmg" : kind === "linux" ? "linux" : "addon"}`);
   }
   m.issued = new Date().toISOString();
 
@@ -243,7 +262,10 @@ function release(a) {
   // signature4: dessutom DMG-fälten – bara nedladdningssidan.
   const signature4 = signB64(privateKey, Buffer.from(canonical4(m), "utf8"));
   if (!verifyB64(publicKey, Buffer.from(canonical4(m), "utf8"), signature4)) fail("självkontrollen av signature4 misslyckades");
-  const manifest = { ...m, blockedAddons: [...blocked], signature, signature2, signature3, signature4 };
+  // signature5: dessutom linux-fälten – Linux-klienten och nedladdningssidan.
+  const signature5 = signB64(privateKey, Buffer.from(canonical5(m), "utf8"));
+  if (!verifyB64(publicKey, Buffer.from(canonical5(m), "utf8"), signature5)) fail("självkontrollen av signature5 misslyckades");
+  const manifest = { ...m, blockedAddons: [...blocked], signature, signature2, signature3, signature4, signature5 };
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   console.log(`Skrev ${manifestPath}`);
   if (a.exe) console.log(`  klient ${m.client}  sha256 ${m.sha256}`);
@@ -252,6 +274,7 @@ function release(a) {
   if (a.addon) console.log(`  addon  ${m.addon}  sha256 ${m.addonSha256}`);
   if (a.mac) console.log(`  mac    ${m.mac}  sha256 ${m.macSha256}`);
   if (a.dmg) console.log(`  dmg    ${m.dmg}  sha256 ${m.dmgSha256}`);
+  if (a.linux) console.log(`  linux  ${m.linux}  sha256 ${m.linuxSha256}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

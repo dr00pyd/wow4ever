@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Forever Scout för Linux: samma Avalonia-app som macOS-klienten (källfilerna i client/mac/ForeverScout.Mac länkas in,
+    konstanten LINUX väljer Linux-delarna) ovanpå samma ForeverScout.Core. Egna filer här: Program.cs och
+    KeychainStore.cs (nyckelfilen). Bygg paketet med client/linux/build.sh – går att köra på Windows, macOS och Linux:
+      dotnet publish -c Release -r linux-x64
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Samma namnrymd som de länkade källfilerna. -->
+    <RootNamespace>ForeverScout.Mac</RootNamespace>
+    <AssemblyName>ForeverScout</AssemblyName>
+    <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
+    <DefineConstants>$(DefineConstants);LINUX</DefineConstants>
+
+    <Version>1.0.11</Version>
+    <FileVersion>1.0.11.0</FileVersion>
+    <AssemblyVersion>1.0.11.0</AssemblyVersion>
+    <Company>Forever-guiden (guide.wow4ever.se)</Company>
+    <Product>Forever Scout</Product>
+    <AssemblyTitle>Forever Scout</AssemblyTitle>
+    <Description>Forever Scout - laddar upp addon-data till Forever-guiden</Description>
+    <Copyright>Forever-guiden 2026</Copyright>
+    <NeutralLanguage>sv-SE</NeutralLanguage>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- Fristående (inget .NET att installera), vanliga filer i en mapp, ingen trimning eller packning. -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <UseAppHost>true</UseAppHost>
+    <DebugType>embedded</DebugType>
+    <SatelliteResourceLanguages>sv;en</SatelliteResourceLanguages>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <AvaloniaVersion>12.1.4</AvaloniaVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <!-- Avalonias byggstatistik (AvaloniaStatsTask, skickar anonym byggdata) körs aldrig: paketet tas bort helt. -->
+    <PackageReference Include="Avalonia.BuildServices" Version="11.3.2" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Hela appen är Linux-kod (nyckelfilen, XDG-autostart). -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>linux</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\windows\src\ForeverScout.Core\ForeverScout.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Gränssnittet och styrningen: macOS-appens källfiler, utom start och nyckelring som är egna här. -->
+  <PropertyGroup>
+    <MacSrc>$(MSBuildThisFileDirectory)..\..\mac\ForeverScout.Mac\</MacSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MacSrc)*.cs" Exclude="$(MacSrc)Program.cs;$(MacSrc)KeychainStore.cs" Link="Shared\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(MacSrc)Assets\*.png" LogicalName="res/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- Addonen paketeras som den ser ut vid bygget (client/addon/ForeverScout/**), precis som i de andra klienterna. -->
+  <PropertyGroup>
+    <AddonDir>$(MSBuildThisFileDirectory)..\..\addon\ForeverScout\</AddonDir>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(AddonDir)')">
+    <EmbeddedResource Include="$(AddonDir)**\*" Exclude="$(AddonDir)**\.git*">
+      <LogicalName>addon/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

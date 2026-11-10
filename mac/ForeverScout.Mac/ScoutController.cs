@@ -53,7 +53,11 @@ internal sealed class ScoutController : IDisposable
         _uploader = new Uploader(api, settings);
 
         // Menyradsikonen: lägerelden som mallbild (följer ljust/mörkt läge), i färg vid uppladdning och fel.
+#if LINUX
+        _iconNormal = Res.Icon("tray-upload-0.png"); // Linux har inga mallbilder: lägerelden i färg
+#else
         _iconNormal = Res.Icon("tray-template.png");
+#endif
         _iconError = Res.Icon("tray-error.png");
         _iconUpload = Enumerable.Range(0, 4).Select(i => Res.Icon($"tray-upload-{i}.png")).ToArray();
 
@@ -393,6 +397,23 @@ internal sealed class ScoutController : IDisposable
             await UpdateAddon(release, interactive, announceBlocked: false, alsoBlocked: null);
             _sync.Notify();
 
+#if LINUX
+            // Linux: appen byter inte ut sig själv än. Finns en nyare signerad version (linux-fälten, signature5)
+            // säger appen till och länkar till nedladdningssidan. Addonen ovan uppdateras automatiskt som vanligt.
+            SignedRelease lin;
+            try { lin = Settings.AcceptRelease(await Api.LinuxVersionAsync(UpdateKeys.PublicKeyPem)); }
+            catch (ApiException ex) when (ex.Code == ErrorCodes.SignatureMissing) { lin = new SignedRelease(); } // inget Linux-släpp än
+            if (lin.LinuxFile is null || !SelfUpdater.IsNewer(lin.Linux))
+            {
+                if (interactive) await Dialogs.Info(_window, TF("update.none", SelfUpdater.CurrentVersion.ToString(3)));
+                return;
+            }
+            if (interactive)
+            {
+                if (await Dialogs.YesNo(_window, TF("update.manual", lin.Linux))) Links.Open(Api, Links.Download(Api));
+            }
+            else if (_offered != lin.Linux) { _offered = lin.Linux; Log(TF("update.manual.log", lin.Linux), Look.Warn); }
+#else
             SignedRelease mac;
             try { mac = Settings.AcceptRelease(await Api.MacVersionAsync(UpdateKeys.PublicKeyPem)); }
             catch (ApiException ex) when (ex.Code == ErrorCodes.SignatureMissing) { mac = new SignedRelease(); } // inget Mac-släpp än
@@ -435,6 +456,7 @@ internal sealed class ScoutController : IDisposable
                 Exit();
             }
             else MacBundleUpdater.CleanupOld();
+#endif
         }
         catch (UpdateStepException ux)
         {
@@ -612,7 +634,11 @@ internal sealed class ScoutController : IDisposable
     {
         try
         {
+#if LINUX
+            var exe = SafeFs.LinuxLaunchPath; // i en AppImage: själva AppImage-filen, inte den tillfälliga monteringen
+#else
             var exe = SafeFs.OwnBundle is { } b ? MacBundleUpdater.ExecutableIn(b) : Environment.ProcessPath;
+#endif
             if (exe != null) using (Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, Arguments = "--restarted" })) { }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }

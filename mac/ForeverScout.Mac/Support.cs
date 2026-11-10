@@ -12,7 +12,12 @@ namespace ForeverScout.Mac;
 /// </summary>
 internal static class Texts
 {
+#if LINUX
+    // Linux-appen (client/linux) bygger på samma källfiler: där vinner "linux.<nyckel>".
+    public static string T(string key) => Strings.Has("linux." + key) ? Strings.S("linux." + key) : Strings.S(key);
+#else
     public static string T(string key) => Strings.Has("mac." + key) ? Strings.S("mac." + key) : Strings.S(key);
+#endif
 
     public static string TF(string key, params object?[] args) => string.Format(Strings.Culture, T(key), args);
 }

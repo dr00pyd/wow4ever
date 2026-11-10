@@ -76,7 +76,9 @@ public static class SafeFs
             lock (Lock)
             {
                 if (_appData != null) return _appData;
-                string dir = Unix
+                string dir = Linux
+                    ? LinuxConfigHome + "/ForeverScout"
+                    : Unix
                     ? Path.Combine(Home, "Library", "Application Support", "ForeverScout")
                     : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ForeverScout");
 #if DEBUG
@@ -104,6 +106,24 @@ public static class SafeFs
 
     /// <summary>macOS: hemkatalogen ($HOME).</summary>
     private static string Home => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    /// <summary>Linux (client/linux). Unix-reglerna gäller också där; det här väljer bara sökvägarna.</summary>
+    [SupportedOSPlatformGuard("linux")]
+    internal static bool Linux => OperatingSystem.IsLinux();
+
+    /// <summary>Linux: $XDG_CONFIG_HOME om den är en absolut sökväg, annars ~/.config (XDG Base Directory).</summary>
+    private static string LinuxConfigHome
+    {
+        get
+        {
+            var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+            if (!string.IsNullOrWhiteSpace(xdg) && xdg.StartsWith('/'))
+            {
+                try { return NormalizeUnix(xdg); } catch (SafeFsException) { }
+            }
+            return NormalizeUnix(Home.TrimEnd('/') + "/.config");
+        }
+    }
 
     /// <summary>macOS: appens datakatalog skapas (och hålls) med rättigheterna 0700 – bara användaren själv.</summary>
     [UnsupportedOSPlatform("windows")]
@@ -443,7 +463,7 @@ public static class SafeFs
             var upd = UpdateDirFor(bundle);
             if (Rel(full, upd) is not null) return (Access.Write, upd);              // .ForeverScout-update/**
         }
-        var agent = LaunchAgentPath;
+        var agent = Linux ? LinuxAutostartPath : LaunchAgentPath;
         if (!isDir && (Eq(full, agent) || Eq(full, agent + ".tmp"))) return (Access.Write, full);
         if (isDir && Eq(full, NormalizeUnix(Path.GetDirectoryName(agent)!.Replace('\\', '/')))) return (Access.Write, full);
         return (null, null);
@@ -878,6 +898,7 @@ public static class SafeFs
     {
         // macOS: Battle.net installerar i /Applications/World of Warcraft (spelet i _forever_ under den), ibland i
         // ~/Applications. Andra volymer listas inte – där väljer användaren själv.
+        if (Linux) return LinuxWowRoots();
         if (Unix) return ["/Applications/World of Warcraft", NormalizeUnix(Home.TrimEnd('/') + "/Applications/World of Warcraft")];
         var list = new List<string>();
         foreach (var b in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles) })
@@ -897,6 +918,54 @@ public static class SafeFs
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
         return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Högst så många Wine-prefix per startare (Steam, Bottles, Faugus) gås igenom.</summary>
+    private const int LinuxMaxPrefixes = 200;
+
+    /// <summary>
+    /// Linux: spelet körs genom Wine, så det ligger i ett Wine-prefix (…/drive_c/Program Files (x86)/World of Warcraft).
+    /// Här listas de vanliga platserna för Lutris, Steam/Proton, Bottles, Faugus Launcher och vanlig Wine. Under Steam,
+    /// Bottles och Faugus har varje prefix ett eget namn: där listas BARA katalognamnen i den kända föräldern (inga
+    /// filer läses), högst <see cref="LinuxMaxPrefixes"/> per förälder. Allt annat väljer användaren själv.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private static List<string> LinuxWowRoots()
+    {
+        var home = Home.TrimEnd('/');
+        var prefixes = new List<string>
+        {
+            home + "/.wine",
+            home + "/Games/battlenet", home + "/Games/battle.net", home + "/Games/blizzard-battlenet",
+            home + "/Games/world-of-warcraft", home + "/Games/wow",
+        };
+        void Children(string parent, string suffix)
+        {
+            try
+            {
+                foreach (var d in Directory.EnumerateDirectories(parent).Take(LinuxMaxPrefixes))
+                    prefixes.Add(d.TrimEnd('/') + suffix);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        foreach (var steam in new[] { home + "/.local/share/Steam", home + "/.steam/steam", home + "/.var/app/com.valvesoftware.Steam/data/Steam" })
+            Children(steam + "/steamapps/compatdata", "/pfx");
+        Children(home + "/.var/app/com.usebottles.bottles/data/bottles/bottles", "");
+        Children(home + "/.local/share/bottles/bottles", "");
+        Children(home + "/Faugus", "");
+
+        var list = new List<string> { home + "/Games/World of Warcraft" };
+        foreach (var p in prefixes)
+        {
+            list.Add(p + "/drive_c/Program Files (x86)/World of Warcraft");
+            list.Add(p + "/drive_c/Program Files/World of Warcraft");
+        }
+        var roots = new List<string>();
+        foreach (var r in list)
+        {
+            try { roots.Add(NormalizeUnix(r)); } catch (SafeFsException) { }
+        }
+        return roots.Distinct(StringComparer.Ordinal).ToList();
     }
 
     public const string WowRegistryKey = @"SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft";
@@ -922,6 +991,7 @@ public static class SafeFs
     {
         get
         {
+            if (Linux) return FileExists(LinuxAutostartPath); // Linux: finns .desktop-filen i ~/.config/autostart?
             if (!OperatingSystem.IsWindows()) return FileExists(LaunchAgentPath); // macOS: finns LaunchAgent-filen?
             try { using var k = Registry.CurrentUser.OpenSubKey(RunKey, writable: false); return k?.GetValue(RunName) is string; }
             catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { return false; }
@@ -930,10 +1000,76 @@ public static class SafeFs
 
     public static void SetAutostart(bool on)
     {
+        if (Linux) { SetLinuxAutostart(on); return; }
         if (!OperatingSystem.IsWindows()) { SetLaunchAgent(on); return; }
         using var k = Registry.CurrentUser.CreateSubKey(RunKey);
         if (on) k.SetValue(RunName, $"\"{OwnExe}\" --tray");
         else k.DeleteValue(RunName, throwOnMissingValue: false);
+    }
+
+    // ------------------------------------------------------------------ Linux: autostart och nyckelfilen
+
+    /// <summary>Linux "Starta vid inloggning" = exakt den här filen (XDG Autostart).</summary>
+    public static string LinuxAutostartPath => LinuxConfigHome + "/autostart/" + MacBundleId + ".desktop";
+
+    /// <summary>
+    /// Linux: filen som startar appen. I en AppImage körs binären från en tillfällig monteringspunkt
+    /// (/tmp/.mount_…), som försvinner när appen avslutas – då gäller själva AppImage-filen ($APPIMAGE, satt av
+    /// AppImage-startaren). Annars binären själv. Bara sökvägen läses; filen rörs inte.
+    /// </summary>
+    public static string? LinuxLaunchPath
+    {
+        get
+        {
+            if (OwnExeOverride is { } o) return NormalizeUnix(o);
+            var image = Environment.GetEnvironmentVariable("APPIMAGE");
+            if (!string.IsNullOrWhiteSpace(image) && image.StartsWith('/'))
+            {
+                try { return NormalizeUnix(image); } catch (SafeFsException) { }
+            }
+            return Environment.ProcessPath is { } exe ? NormalizeUnix(exe) : null;
+        }
+    }
+
+    /// <summary>Skriver eller tar bort ~/.config/autostart/se.wow4ever.foreverscout.desktop (startar appen med --tray).</summary>
+    [SupportedOSPlatform("linux")]
+    private static void SetLinuxAutostart(bool on)
+    {
+        var file = LinuxAutostartPath;
+        if (!on) { DeleteFile(file); return; }
+        var exe = LinuxLaunchPath ?? throw new SafeFsException("no-exe", "");
+        CreateDirectory(Path.GetDirectoryName(file)!.Replace('\\', '/'));
+        WriteAllText(file, LinuxAutostartDesktop(exe));
+    }
+
+    /// <summary>.desktop-filens innehåll (ren funktion, testas). Sökvägen citeras enligt Desktop Entry-specifikationen.</summary>
+    internal static string LinuxAutostartDesktop(string exe)
+    {
+        // Exec: argument inom citattecken, där " ` $ och \ föregås av bakstreck; i strängvärden skrivs \ dessutom som \\.
+        var quoted = new System.Text.StringBuilder("\"");
+        foreach (var c in exe)
+        {
+            if (c is '\n' or '\r') throw new SafeFsException("bad-path", exe);
+            if (c == '\\') quoted.Append("\\\\\\\\");
+            else if (c is '"' or '`' or '$') quoted.Append("\\\\").Append(c);
+            else if (c == '%') quoted.Append("%%");
+            else quoted.Append(c);
+        }
+        quoted.Append('"');
+        return "[Desktop Entry]\nType=Application\nName=Forever Scout\nExec=" + quoted + " --tray\nTerminal=false\nX-GNOME-Autostart-enabled=true\n";
+    }
+
+    /// <summary>
+    /// Linux: nyckelfilen i appens datakatalog (katalogen 0700) får rättigheterna 0600 – bara användaren själv.
+    /// Linux har ingen nyckelring som finns på alla skrivbord (Steam Deck, fönsterhanterare utan Secret Service).
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    public static void WritePrivateText(string path, string text)
+    {
+        var p = Check(path, Access.Write, isDir: false);
+        if (!p.StartsWith(AppDataDir + Sep, StringComparison.Ordinal)) throw new SafeFsException("not-appdata", p);
+        WriteAllText(p, text);
+        File.SetUnixFileMode(p, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     // ------------------------------------------------------------------ macOS: inloggning, verktyg och lås

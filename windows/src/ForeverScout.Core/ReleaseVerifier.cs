@@ -7,7 +7,7 @@ namespace ForeverScout.Core;
 
 /// <summary>Client = fristående (full) exe, Lite = ramverksberoende exe (kräver .NET 10 Desktop Runtime), Addon = addon-zip,
 /// Mac = zip med det signerade och notariserade .app-paketet (bara i signature3-formatet).</summary>
-public enum ReleaseKind { Client, Addon, Lite, Mac }
+public enum ReleaseKind { Client, Addon, Lite, Mac, Linux }
 
 public sealed record ReleaseFile(ReleaseKind Kind, string Version, string FileName, string Sha256, string Signature);
 
@@ -24,6 +24,9 @@ public sealed class SignedRelease
     /// <summary>macOS-appen (bara när svaret verifierats med signature3, se <see cref="ReleaseVerifier.VerifyMac"/>).</summary>
     public string? Mac { get; init; }
     public ReleaseFile? MacFile { get; init; }
+    /// <summary>Linux-appen (bara när svaret verifierats med signature5, se <see cref="ReleaseVerifier.VerifyLinux"/>).</summary>
+    public string? Linux { get; init; }
+    public ReleaseFile? LinuxFile { get; init; }
     public string? Issued { get; init; }
     /// <summary>Verifierades svaret med signature2 (utökat fältset)? Alltid sant från 1.0.7, som kräver signature2 (L10).</summary>
     public bool HasSignature2 { get; init; }
@@ -34,8 +37,8 @@ public sealed class SignedRelease
     /// installera en äldre addon (L10, se <see cref="AddonInstaller.Decide"/>).</summary>
     public IReadOnlyList<string> BlockedAddons { get; init; } = [];
 
-    public ReleaseFile? File(ReleaseKind k) => k switch { ReleaseKind.Client => ClientFile, ReleaseKind.Lite => LiteFile, ReleaseKind.Mac => MacFile, _ => AddonFile };
-    public string? VersionOf(ReleaseKind k) => k switch { ReleaseKind.Client => Client, ReleaseKind.Lite => Lite, ReleaseKind.Mac => Mac, _ => Addon };
+    public ReleaseFile? File(ReleaseKind k) => k switch { ReleaseKind.Client => ClientFile, ReleaseKind.Lite => LiteFile, ReleaseKind.Mac => MacFile, ReleaseKind.Linux => LinuxFile, _ => AddonFile };
+    public string? VersionOf(ReleaseKind k) => k switch { ReleaseKind.Client => Client, ReleaseKind.Lite => Lite, ReleaseKind.Mac => Mac, ReleaseKind.Linux => Linux, _ => Addon };
     public bool IsAddonBlocked(string? version) => version != null && BlockedAddons.Contains(version);
 }
 
@@ -80,6 +83,15 @@ public static partial class ReleaseVerifier
     /// <summary>Fälten för signature3 (macOS): alla fält i signature2 plus mac-fälten, i bokstavsordning.</summary>
     public static readonly string[] SignedFields3 =
         ["addon", "addonFile", "addonSha256", "addonSig", "client", "clientFile", "clientSig", "issued", "lite", "liteFile", "liteSha256", "liteSig",
+         "mac", "macFile", "macSha256", "macSig", "setup", "setupFile", "setupSha256", "setupSig", "sha256", "v"];
+
+    /// <summary>
+    /// Fälten för signature5 (Linux): alla fält i signature3 plus dmg-fälten (signature4, nedladdningssidan) och
+    /// linux-fälten, i bokstavsordning. Används BARA av <see cref="VerifyLinux"/>; Windows och macOS läser den inte.
+    /// </summary>
+    public static readonly string[] SignedFields5 =
+        ["addon", "addonFile", "addonSha256", "addonSig", "client", "clientFile", "clientSig", "dmg", "dmgFile", "dmgSha256", "dmgSig", "issued",
+         "linux", "linuxFile", "linuxSha256", "linuxSig", "lite", "liteFile", "liteSha256", "liteSig",
          "mac", "macFile", "macSha256", "macSig", "setup", "setupFile", "setupSha256", "setupSig", "sha256", "v"];
 
     public const int FormatVersion = 1;
@@ -148,7 +160,7 @@ public static partial class ReleaseVerifier
     public static byte[] FileMessage(ReleaseKind kind, string version, string sha256) =>
         Encoding.UTF8.GetBytes($"ForeverScout-file/v1\n{KindName(kind)}\n{version}\n{sha256.ToLowerInvariant()}");
 
-    public static string KindName(ReleaseKind kind) => kind switch { ReleaseKind.Client => "client", ReleaseKind.Lite => "lite", ReleaseKind.Mac => "mac", _ => "addon" };
+    public static string KindName(ReleaseKind kind) => kind switch { ReleaseKind.Client => "client", ReleaseKind.Lite => "lite", ReleaseKind.Mac => "mac", ReleaseKind.Linux => "linux", _ => "addon" };
 
     private static ECDsa Key(string publicKeyPem)
     {
@@ -169,15 +181,21 @@ public static partial class ReleaseVerifier
     }
 
     /// <summary>Kontrollerar versionsinfons signatur och returnerar dess innehåll. Kastar vid saknad/ogiltig signatur.</summary>
-    public static SignedRelease Verify(string json, string publicKeyPem) => Verify(json, publicKeyPem, mac: false);
+    public static SignedRelease Verify(string json, string publicKeyPem) => Verify(json, publicKeyPem, mac: false, linux: false);
+
+    /// <summary>
+    /// Linux: kräver <c>signature5</c> (över <see cref="SignedFields5"/>, ingen reserv) och returnerar även linux-fälten.
+    /// Kastar vid saknad/ogiltig signatur.
+    /// </summary>
+    public static SignedRelease VerifyLinux(string json, string publicKeyPem) => Verify(json, publicKeyPem, mac: false, linux: true);
 
     /// <summary>
     /// macOS: kräver <c>signature3</c> (över <see cref="SignedFields3"/>, ingen reserv till signature2/signature) och
     /// returnerar även mac-fälten. Kastar vid saknad/ogiltig signatur.
     /// </summary>
-    public static SignedRelease VerifyMac(string json, string publicKeyPem) => Verify(json, publicKeyPem, mac: true);
+    public static SignedRelease VerifyMac(string json, string publicKeyPem) => Verify(json, publicKeyPem, mac: true, linux: false);
 
-    private static SignedRelease Verify(string json, string publicKeyPem, bool mac)
+    private static SignedRelease Verify(string json, string publicKeyPem, bool mac, bool linux)
     {
         using var key = Key(publicKeyPem);
         JsonDocument doc;
@@ -188,7 +206,14 @@ public static partial class ReleaseVerifier
             if (root.ValueKind != JsonValueKind.Object) throw new ApiException(ErrorCodes.BadResponse);
             static string? SigOf(JsonElement r, string n) =>
                 r.TryGetProperty(n, out var e) && e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()) ? e.GetString() : null;
-            if (mac)
+            if (linux)
+            {
+                // Linux: signature5 över alla fält måste finnas och stämma. Ingen reserv.
+                var s5 = SigOf(root, "signature5") ?? throw new ApiException(ErrorCodes.SignatureMissing);
+                if (!VerifySig(key, Encoding.UTF8.GetBytes(Canonical(root, SignedFields5)), s5))
+                    throw new ApiException(ErrorCodes.SignatureInvalid);
+            }
+            else if (mac)
             {
                 // macOS: signature3 över alla fält måste finnas och stämma. Ingen reserv.
                 var s3 = SigOf(root, "signature3") ?? throw new ApiException(ErrorCodes.SignatureMissing);
@@ -240,6 +265,9 @@ public static partial class ReleaseVerifier
                 Mac = mac ? Str("mac") : null,
                 MacFile = mac ? FileOf(ReleaseKind.Mac, "mac", "macFile", "macSha256", "macSig") : null,
                 HasSignature3 = mac,
+                // Linux-fälten är bara signerade av signature5 – utan den ignoreras de.
+                Linux = linux ? Str("linux") : null,
+                LinuxFile = linux ? FileOf(ReleaseKind.Linux, "linux", "linuxFile", "linuxSha256", "linuxSig") : null,
                 Issued = Str("issued"),
                 BlockedAddons = blocked,
             };

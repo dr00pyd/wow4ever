@@ -302,9 +302,18 @@ public class StaticGuardTests
         return mac;
     }
 
+    /// <summary>client/linux/ForeverScout.Linux (Linux-appens egna filer; resten är macOS-appens källfiler).</summary>
+    private static string LinuxDir()
+    {
+        var linux = Path.GetFullPath(Path.Combine(SrcDir(), "..", "..", "linux", "ForeverScout.Linux"));
+        Assert.True(Directory.Exists(linux), "hittar inte " + linux);
+        return linux;
+    }
+
     private static IEnumerable<(string File, int Line, string Text)> Sources()
     {
-        foreach (var f in Directory.GetFiles(SrcDir(), "*.cs", SearchOption.AllDirectories).Concat(Directory.GetFiles(MacDir(), "*.cs", SearchOption.AllDirectories)))
+        foreach (var f in Directory.GetFiles(SrcDir(), "*.cs", SearchOption.AllDirectories).Concat(Directory.GetFiles(MacDir(), "*.cs", SearchOption.AllDirectories))
+            .Concat(Directory.GetFiles(LinuxDir(), "*.cs", SearchOption.AllDirectories)))
         {
             if (f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") || f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")) continue;
             var lines = File.ReadAllLines(f);

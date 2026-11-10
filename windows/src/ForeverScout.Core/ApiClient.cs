@@ -318,6 +318,16 @@ public sealed class ApiClient : IDisposable
         return ReleaseVerifier.VerifyMac(json, publicKeyPem);
     }
 
+    /// <summary>
+    /// Linux: samma versionsinfo, verifierad med signature5 (<see cref="ReleaseVerifier.VerifyLinux"/>) så att
+    /// linux-fälten är signerade. Saknas signature5 blir det ett fel, ingen reserv.
+    /// </summary>
+    public async Task<SignedRelease> LinuxVersionAsync(string publicKeyPem, CancellationToken ct = default)
+    {
+        var json = await GetStringAsync("/api/bidrag/version", 256 * 1024, ct);
+        return ReleaseVerifier.VerifyLinux(json, publicKeyPem);
+    }
+
     private async Task<string> GetStringAsync(string path, int maxBytes, CancellationToken ct)
     {
         HttpResponseMessage resp;

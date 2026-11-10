@@ -16,6 +16,11 @@ internal sealed class BrowserLinkWindow : Window
 {
     private readonly ApiClient _api;
     private readonly Action<Contributor>? _store;
+#if LINUX
+    private const string Platform = "linux";
+#else
+    private const string Platform = "mac";
+#endif
     private readonly TextBlock _code = new() { Text = "····-····", FontFamily = Look.Mono, FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.B(Look.GoldHi) };
     private readonly TextBlock _status = Look.Label("", 13, Look.Muted);
     private readonly Button _reopen = Look.QuietButton(T("link.reopen"));
@@ -87,7 +92,7 @@ internal sealed class BrowserLinkWindow : Window
         _url = null;
         _code.Text = "····-····";
         SetStatus(T("link.starting"), Look.Muted);
-        var flow = new DeviceLink(_api, "mac", BuildInfo.Version.ToString(3)) { OnApproved = _store };
+        var flow = new DeviceLink(_api, Platform, BuildInfo.Version.ToString(3)) { OnApproved = _store };
         var result = await flow.RunAsync(t =>
         {
             _code.Text = t.DisplayCode;
