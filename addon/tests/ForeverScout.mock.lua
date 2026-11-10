@@ -80,7 +80,7 @@ local function fire(event, ...) frame.script(frame, event, ...) end
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.7", "addonversion 1.0.7")
+check(db.addon == "1.0.8", "addonversion 1.0.8")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
 for _, e in ipairs({ "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "MAIL_SHOW", "AUCTION_HOUSE_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
@@ -93,7 +93,7 @@ do
   check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
   fire("PLAYER_LOGIN")
   DEFAULT_CHAT_FRAME.AddMessage = old
-  check(#said == 1 and said[1]:find("1.0.7", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
+  check(#said == 1 and said[1]:find("1.0.8", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------
@@ -317,6 +317,26 @@ units.target = { guid = HALL, name = "Plunder", dead = true, level = 30 }
 lootWindow({ { item = 2589, guid = HALL } })
 local hl = db.loot[#db.loot]
 check(hl.src == "npc" and hl.id == 250001 and hl.im == 3065 and hl.m == nil and hl.x == nil, "instans: loot får im, ingen position")
+-- 1.0.8: spelet döljer mål för addons i instanser – mobben och killen noteras när kroppen lootas
+local pm = db.mobs[250001]
+check(pm and pm.n == "Plunder" and pm.i and pm.i[1] == 3065 and pm.lmin == 30 and (pm.a == nil or #pm.a == 0), "instans: lootad mob sparas med namn, level och instans – ingen plats")
+local pk = db.kills[#db.kills]
+check(pk and pk.id == 250001 and pk.im == 3065 and pk.loot == true and pk.h ~= nil, "instans: lootad kropp räknas som kill")
+local nKills, nMobs = #db.kills, 0
+for _ in pairs(db.mobs) do nMobs = nMobs + 1 end
+lootWindow({ { item = 2589, guid = HALL } })
+check(#db.kills == nKills, "samma kropp räknas bara en gång")
+-- Utan mål eller muspekare på kroppen: killen räknas, men ingen namnlös mob sparas
+units.target = nil
+local NONAME = "Creature-0-4372-3065-77-250003-0000000045"
+lootWindow({ { item = 2589, guid = NONAME } })
+check(#db.kills == nKills + 1 and db.kills[#db.kills].id == 250003 and db.mobs[250003] == nil, "instans: kill utan läsbart namn ger ingen mob")
+-- Målet är en annan varelse än kroppen: dess namn får inte hamna på den lootade mobben
+units.target = { guid = "Creature-0-4372-3065-77-250009-0000000049", name = "Någon Annan", dead = false, level = 31 }
+local OTHER = "Creature-0-4372-3065-77-250004-0000000046"
+lootWindow({ { item = 2589, guid = OTHER } })
+check(db.mobs[250004] == nil, "instans: namnet tas bara från enheten som ÄR kroppen")
+units.target = { guid = HALL, name = "Plunder", dead = true, level = 30 }
 units.target = nil
 fire("ENCOUNTER_END", 3494, "Plunder", 1, 5, 1)
 lootWindow({ { item = 2590, guid = SECRET } })

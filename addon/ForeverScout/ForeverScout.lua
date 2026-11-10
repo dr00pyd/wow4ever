@@ -14,7 +14,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.7"
+local VERSION = "1.0.8"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -945,6 +945,9 @@ end
 
 local SECRET_SOURCE = "?"   -- loot slots whose source GUID the game hides (secret value, e.g. in instances)
 
+-- 1.0.8: defined after the mob and kill code (see "Looted in an instance" below).
+local noteLootedMob
+
 -- 1.0.5: who dropped loot whose source GUIDs are hidden? First the dead target when its GUID is readable, then the
 -- boss of a won encounter (ENCOUNTER_END) in the last ENC_WINDOW seconds – once per encounter, and only if a dead
 -- target with a readable name is that boss. Returns key, kind, src, id (or nil: the loot is not recorded).
@@ -1030,6 +1033,9 @@ local function onLootOpened()
         pushLoot({ q = nextSeq(), t = now(), src = src, id = id, items = s.items, money = s.money > 0 and s.money or nil,
                    h = kind ~= "boss" and guidTag(guid) or nil, grp = grp, pf = pf })
         touch("loot", tostring(id))
+        -- 1.0.8: inside an instance the game hides targets from addons, so the mob and the kill are noted here,
+        -- where the corpse's GUID is readable.
+        if kind == "npc" and src == "npc" and noteLootedMob then noteLootedMob(guid, id, grp) end
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
           session.sentName, session.sentAt = nil, 0   -- used once (L13)
@@ -1285,6 +1291,64 @@ local function watchTarget()
 end
 
 ---------------------------------------------------------------------------
+-- Looted in an instance (1.0.8)
+---------------------------------------------------------------------------
+
+-- Inside instances the game hides unit information from addons while fighting (secret values), so noteMob and
+-- watchTarget above skip nearly everything there: The Hall of Thanes produced loot but no mobs and no kills.
+-- The loot window does give the corpse's GUID. When a creature is looted inside an instance:
+--   * the kill is recorded (once per corpse – not if watchTarget already did), with loot = true;
+--   * the mob is recorded with the instance id, if its name can be read from the target or the mouseover unit
+--     that IS this corpse (same GUID). Only the name, level and classification – never a position.
+-- Outside instances nothing changes.
+local function corpseUnit(guid)
+  for _, unit in ipairs({ "target", "mouseover" }) do
+    if str(try(UnitGUID, unit)) == guid then return unit end
+  end
+  return nil
+end
+
+noteLootedMob = function(guid, id, grp)
+  local inst = instanceMap()
+  if not inst then return end
+  if not session.killed[guid] then
+    remember(session.killed, guid)
+    session.alive[guid] = nil
+    pushKill({ t = floor(now() / 86400) * 86400, id = id, h = guidTag(guid), grp = grp, im = inst, loot = true, q = nextSeq() })
+    touch("kill", tostring(id))
+  end
+  local unit = corpseUnit(guid)
+  local name = unit and str(try(UnitName, unit)) or nil
+  if not name then return end
+  local ct = creatureType(unit)
+  if ct == 11 or ct == 12 then return end        -- totems and companion pets belong to players
+  local rec = db.mobs[id]
+  local isNew = not rec
+  if isNew then
+    if session.mobCount >= MAX_MOBS then return end
+    rec = {}; db.mobs[id] = rec; session.mobCount = session.mobCount + 1
+  end
+  rec.n = name
+  rec.i = type(rec.i) == "table" and rec.i or {}
+  local known = false
+  for _, v in ipairs(rec.i) do if v == inst then known = true end end
+  local newInst = false
+  if not known and #rec.i < MOB_INSTANCES then rec.i[#rec.i + 1] = inst; newInst = true end
+  local l = not drunk() and num(try(UnitLevel, unit)) or nil
+  if l and l > 0 then
+    if not rec.lmin or rec.lmin < 1 then rec.lmin, rec.lmax = l, l
+    else rec.lmin, rec.lmax = math.min(rec.lmin, l), math.max(rec.lmax or l, l) end
+  elseif l == -1 and not rec.lmin then
+    rec.lmin, rec.lmax = -1, -1
+  end
+  local c = str(try(UnitClassification, unit))
+  if c and CLASSIFICATIONS[c] then rec.c = c end
+  if ct then rec.ct = ct end
+  rec.pf = str(try(UnitFactionGroup, "player")) or rec.pf
+  if isNew or newInst then touch("mob", name) end
+end
+
+---------------------------------------------------------------------------
 -- Mailboxes and service NPCs (1.0.4)
 ---------------------------------------------------------------------------
 
@@ -1452,6 +1516,30 @@ local function say(msg)
   end
 end
 
+-- /scout test (1.0.8): what the game lets the addon read about the current target right now – to find out why
+-- something is not recorded (e.g. inside an instance). Prints only yes/no/hidden; nothing is saved or sent.
+local function diagnose()
+  local function flag(fn, ...)
+    if type(fn) ~= "function" then return "n/a" end
+    local v = unitFlag(fn, ...)
+    if v == nil then return "hidden" end
+    return v and "yes" or "no"
+  end
+  local function readable(v) return v ~= nil and "ok" or "hidden" end
+  local inst = instanceMap()
+  say("test: instance=" .. tostring(inst or "no") .. " combat=" .. (inCombat() and "yes" or "no") .. " mobs=" .. tostring(session.mobCount))
+  for _, unit in ipairs({ "target", "mouseover" }) do
+    if unitFlag(UnitExists, unit) == true then
+      local kind = parseGuid(str(try(UnitGUID, unit)))
+      say(unit .. ": guid=" .. readable(str(try(UnitGUID, unit))) .. " kind=" .. tostring(kind) .. " name=" .. readable(str(try(UnitName, unit)))
+        .. " level=" .. readable(num(try(UnitLevel, unit))) .. " dead=" .. flag(UnitIsDead, unit) .. " player=" .. flag(UnitIsPlayer, unit)
+        .. " controlled=" .. flag(UnitPlayerControlled, unit) .. " tapDenied=" .. flag(UnitIsTapDenied, unit) .. " wild=" .. (wildNpc(unit) and "yes" or "no"))
+    else
+      say(unit .. ": none")
+    end
+  end
+end
+
 local function count(t)
   local n = 0
   for _ in pairs(t or {}) do n = n + 1 end
@@ -1526,6 +1614,8 @@ local function onSlash(msg)
     -- bevakar filen och laddar upp när den sparats.
     say(L.sync)
     if C_UI and C_UI.Reload then C_UI.Reload() elseif ReloadUI then ReloadUI() end
+  elseif cmd == "test" then
+    diagnose()
   elseif cmd == "debug" then
     say(string.format(L.debug, session.errors, tostring(session.lastError or "-")))
   else
