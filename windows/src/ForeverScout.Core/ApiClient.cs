@@ -348,6 +348,9 @@ public sealed class ApiClient : IDisposable
     /// Laddar ner en släppt fil från /scout/&lt;fil&gt; på sajtens egen värd och kontrollerar den mot den signerade
     /// versionsinfon: SHA-256 mot det signerade värdet och filsignaturen över (typ, version, sha256).
     /// </summary>
+    /// <summary>Längsta tid utan ny data under en nedladdning innan den avbryts (tester sätter en kort).</summary>
+    public TimeSpan DownloadStall { get; set; } = TimeSpan.FromSeconds(60);
+
     public async Task<byte[]> DownloadReleaseFileAsync(SignedRelease release, ReleaseKind kind, string publicKeyPem, long maxBytes, CancellationToken ct = default)
     {
         var f = release.File(kind) ?? throw new ApiException(ErrorCodes.NoRelease);
@@ -358,19 +361,33 @@ public sealed class ApiClient : IDisposable
         HttpResponseMessage resp;
         try { resp = await _http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct); }
         catch (HttpRequestException) { throw new ApiException(ErrorCodes.Network, transient: true); }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new ApiException(ErrorCodes.Timeout, transient: true); }
         using (resp)
         {
             RefuseRedirect(resp);
             if (!resp.IsSuccessStatusCode) throw new ApiException(ErrorCodes.Http, resp.StatusCode);
-            await using var s = await resp.Content.ReadAsStreamAsync(ct);
+            // 1.0.12: HttpClient.Timeout gäller bara svarshuvudena här. Tystnar anslutningen mitt i filen väntade läsningen
+            // för evigt – och inga fler uppdateringar hämtades förrän appen startades om. Nu: högst DownloadStall utan data.
+            using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
             using var ms = new MemoryStream();
-            var buf = new byte[81920];
-            int n;
-            while ((n = await s.ReadAsync(buf, ct)) > 0)
+            try
             {
-                ms.Write(buf, 0, n);
-                if (ms.Length > maxBytes) throw new ApiException(ErrorCodes.DownloadTooLarge);
+                stall.CancelAfter(DownloadStall);
+                await using var s = await resp.Content.ReadAsStreamAsync(stall.Token);
+                var buf = new byte[81920];
+                int n;
+                while (true)
+                {
+                    stall.CancelAfter(DownloadStall);
+                    n = await s.ReadAsync(buf, stall.Token);
+                    if (n <= 0) break;
+                    ms.Write(buf, 0, n);
+                    if (ms.Length > maxBytes) throw new ApiException(ErrorCodes.DownloadTooLarge);
+                }
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new ApiException(ErrorCodes.Timeout, transient: true); }
+            catch (IOException) { throw new ApiException(ErrorCodes.Network, transient: true); }
+            catch (HttpRequestException) { throw new ApiException(ErrorCodes.Network, transient: true); }
             var data = ms.ToArray();
             ReleaseVerifier.VerifyFile(data, kind, f, publicKeyPem);
             return data;

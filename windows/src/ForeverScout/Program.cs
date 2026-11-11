@@ -25,6 +25,8 @@ internal static class Program
 #endif
         void Activate() => app?.OnUi(() => app.ShowWindow());
         bool restarted = args.Contains("--restarted");
+        // 1.0.12: startad av användaren (dubbelklick, Start-menyn) – inte av autostart (--tray/--minimized) eller en omstart.
+        bool userStarted = !restarted && !args.Contains("--tray") && !args.Contains("--minimized") && !shots;
         // Efter en uppdatering/omstart: vänta på att den gamla processen släpper mutexen (den avslutar sig själv).
         var instance = SingleInstance.TryAcquire(InstanceId, Activate, restarted ? TimeSpan.FromSeconds(30) : null);
 
@@ -67,6 +69,9 @@ internal static class Program
             if (first.ShowDialog() != DialogResult.OK || first.Result is not { } who) return 0;
             ContributorStore.Save(who, api, settings, KeyStore.Save); // samma väg för namn, kod och webbläsaren
             firstRun = true;
+            settings.AutostartAsked = true;
+            try { SafeFs.SetAutostart(first.StartWithWindows); }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
         }
 
         using var scout = new ScoutApp(settings, api);
@@ -90,7 +95,7 @@ internal static class Program
         {
             if (shots) { await Screenshots.Run(scout); return; }
             if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
-            var start = scout.StartAsync(showWindow);
+            var start = scout.StartAsync(showWindow, userStarted);
 #if DEBUG
             if (stress > 0) StressTest.Start(scout, stress);
 #endif

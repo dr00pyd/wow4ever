@@ -20,7 +20,8 @@ internal sealed class ScoutApp : ApplicationContext
     public bool Uploading => _uploader.IsBusy || _uploadingUi || _simUploading;
 
     /// <summary>Senaste fel som visas (redan översatt), null om inget.</summary>
-    public string? ErrorText => _errorText;
+    /// <summary>Fel att visa: uppladdningens, annars addonens (1.0.12: addonens fel raderas inte av nästa synk).</summary>
+    public string? ErrorText => _errorText ?? _addonError;
     /// <summary>Finns minst en ForeverScout.lua (dvs. har spelet sparat addonens data någon gång)?</summary>
     public bool HasSavedVariables { get; private set; }
 
@@ -57,6 +58,8 @@ internal sealed class ScoutApp : ApplicationContext
     private bool _exiting;
     private string _statsStamp = "";
     private string? _errorText;
+    /// <summary>1.0.12: addonen kunde inte installeras eller väntar på en signerad version. Lever tills addonen är på plats.</summary>
+    private string? _addonError;
 
     public ScoutApp(Settings settings, ApiClient api)
     {
@@ -121,11 +124,14 @@ internal sealed class ScoutApp : ApplicationContext
     // ------------------------------------------------------------------ start
 
     /// <param name="showWindow">Visa fönstret direkt (efter första starten). Annars bara ikonen i fältet.</param>
-    public async Task StartAsync(bool showWindow)
+    /// <param name="userStarted">Användaren startade appen själv (inte autostart, inte omstart efter uppdatering). Bara då
+    /// får appen fråga något i en dialog – aldrig över spelet efter en tyst uppdatering (1.0.12).</param>
+    public async Task StartAsync(bool showWindow, bool userStarted = false)
     {
         if (showWindow) ShowWindow();
         RefreshAutostartPath();
-        EnsureGameDir();
+        if (userStarted) AskAutostartOnce();
+        EnsureGameDir(interactive: showWindow || userStarted);
         ApplyGameDir();
         InstallBundledAddonIfNeeded();
         RefreshStats(force: true);
@@ -137,7 +143,25 @@ internal sealed class ScoutApp : ApplicationContext
         if (Live is not { Visible: true }) MemoryTrim.Trim(); // starten är klar – allt som bara behövdes då släpps
     }
 
-    private bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
+    public bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
+
+    /// <summary>
+    /// 1.0.12: autostart var av som standard och nämndes bara i Inställningar – den som startade om datorn laddade inte
+    /// upp något, utan besked. Nu frågas det på välkomstskärmen, och befintliga användare får frågan en gång.
+    /// </summary>
+    private void AskAutostartOnce()
+    {
+        if (Settings.AutostartAsked) return;
+        Settings.AutostartAsked = true;
+        try { Settings.Save(); } catch { }
+        try
+        {
+            if (SafeFs.AutostartEnabled) return;
+            var answer = Message(S("autostart.ask"), S("autostart.ask.title"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer == DialogResult.Yes) SafeFs.SetAutostart(true);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
+    }
 
     /// <summary>"Starta med Windows" på: peka Run-värdet på den exe som körs nu (alltid den senaste filen).</summary>
     private static void RefreshAutostartPath()
@@ -173,16 +197,22 @@ internal sealed class ScoutApp : ApplicationContext
         _sync.Watch(CurrentDir?.AccountDir);
     }
 
-    private void EnsureGameDir()
+    /// <param name="interactive">Användaren startade appen (fönstret visas). Vid autostart (bara ikonen) öppnas ingen
+    /// dialog över skrivbordet – en bubbla säger vad som behövs, och fönstret har en knapp för det (1.0.12).</param>
+    private void EnsureGameDir(bool interactive)
     {
-        var (step, dir) = WowLocator.NextStep(Settings, WowLocator.IsUsableGameDir, () => WowLocator.Locate());
+        WowLocator.StartStep step;
+        string? dir;
+        try { (step, dir) = WowLocator.NextStep(Settings, WowLocator.IsUsableGameDir, () => WowLocator.Locate()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { (step, dir) = (WowLocator.StartStep.Pick, null); }
         switch (step)
         {
             case WowLocator.StartStep.Confirm:
                 ConfirmFoundGameDir(dir!);
                 break;
             case WowLocator.StartStep.Pick:
-                OnUi(() => OpenSettings(pickDir: true));
+                if (interactive) OnUi(() => OpenSettings(pickDir: true));
+                else Toast("Forever Scout", S("gamedir.toast"));
                 break;
         }
     }
@@ -221,7 +251,14 @@ internal sealed class ScoutApp : ApplicationContext
                 Log(F("journal.addon", bundled), Theme.Ok);
             }
         }
-        catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetError(Error(ex)); }
+        catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetAddonError(Error(ex)); return; }
+        if (AddonInstaller.InstalledVersion(dir) != null && _addonError != null && !Settings.BlockedAddons.Contains(AddonInstaller.InstalledVersion(dir) ?? "")) SetAddonError(null);
+    }
+
+    private void SetAddonError(string? text)
+    {
+        _addonError = text;
+        UpdateStatus();
     }
 
     // ------------------------------------------------------------------ data
@@ -304,15 +341,16 @@ internal sealed class ScoutApp : ApplicationContext
     public void UpdateStatus()
     {
         if (Uploading) { State = TrayState.Uploading; StatusText = S("uploading"); StatusColor = Theme.Gold; }
-        else if (_errorText != null) { State = TrayState.Error; StatusText = _errorText; StatusColor = Theme.Err; }
+        else if (ErrorText is { } errText) { State = TrayState.Error; StatusText = errText; StatusColor = Theme.Err; }
         else if (Settings.NextRetryUtc is { } next) { State = TrayState.Error; StatusText = F("retry", When(next)); StatusColor = Theme.Warn; }
         else
         {
             State = TrayState.Normal;
             StatusText = CurrentDir is null ? S("game.none")
                 : Settings.AutoUploadPaused ? S("paused")
+                : !Settings.AutoUpload ? S("auto.off")
                 : Settings.LastUploadUtc is { } t ? F("last", When(t)) : S("never");
-            StatusColor = CurrentDir is null || Settings.AutoUploadPaused ? Theme.Warn : Theme.Muted;
+            StatusColor = CurrentDir is null || !AutoUploadActive ? Theme.Warn : Theme.Muted;
         }
 
         if (State == TrayState.Uploading) { if (!_anim.Enabled) _anim.Start(); }
@@ -361,7 +399,9 @@ internal sealed class ScoutApp : ApplicationContext
     /// </summary>
     public async Task UploadNow(bool quietIfNothing = false)
     {
-        if (CurrentDir is not { } dir) { OpenSettings(pickDir: true); return; }
+        // 1.0.12: bakgrundssynken (quietIfNothing) öppnar aldrig en dialog – förr dök "Välj WoW-katalog" upp vid varje
+        // autostart och vid omförsök. Bara knappen, menyn och F5 öppnar valet av katalog.
+        if (CurrentDir is not { } dir) { if (!quietIfNothing) OpenSettings(pickDir: true); return; }
         if (string.IsNullOrEmpty(Api.Key)) return;
         _uploadingUi = true;
         UpdateStatus();
@@ -546,14 +586,15 @@ internal sealed class ScoutApp : ApplicationContext
                 return;
             case AddonInstaller.UpdateAction.BlockedWaiting:
                 var wait = F("addon.blocked.wait", installed);
-                if (_errorText != wait) Log(F("journal.error", When(DateTime.UtcNow), wait), Theme.Warn);
-                SetError(wait);
+                if (_addonError != wait) Log(F("journal.error", When(DateTime.UtcNow), wait), Theme.Warn);
+                SetAddonError(wait);
                 if (interactive) Message(wait, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
         }
         var zip = await Api.DownloadReleaseFileAsync(release, ReleaseKind.Addon, UpdateKeys.PublicKeyPem, 20 * 1024 * 1024);
         AddonInstaller.Install(dir, AddonInstaller.FromZip(zip));
         _errorText = null;
+        _addonError = null;
         var msg = announceBlocked ? F("addon.blocked", release.Addon) : F("update.addon", release.Addon);
         if (interactive) Message(msg, S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         else Toast("Forever Scout", msg);

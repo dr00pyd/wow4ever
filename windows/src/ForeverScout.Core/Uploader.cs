@@ -49,6 +49,15 @@ public sealed class Uploader(ApiClient api, Settings settings)
     public bool RetryDue => settings.NextRetryUtc is { } t && t <= DateTime.UtcNow;
 
     /// <summary>
+    /// Tillfälligt fel (nät, tidsgräns, 5xx, 429, fil låst): hela körningen avbryts och ett nytt försök schemaläggs.
+    /// Allt annat gäller bara en fil: den hoppas över, felet visas och övriga filer skickas ändå (1.0.12).
+    /// </summary>
+    private static bool IsTransient(Exception ex) => ex is ApiException { Transient: true } or IOException;
+
+    /// <summary>Fel som bara gäller en fil (för stor, avvisad, trasigt svar …) – inte skyddet i SafeFs.</summary>
+    private static bool IsPerFile(Exception ex) => ex is ScoutException and not SafeFsException && !IsTransient(ex);
+
+    /// <summary>
     /// Laddar upp ändrade filer. Körningar köas (aldrig två samtidigt). En fil skickas bara om den går att parsa helt
     /// och dess sha256 skiljer sig från förra lyckade uppladdningen för samma kontokatalog (nyckeln är en hash av sökvägen).
     /// </summary>
@@ -60,6 +69,7 @@ public sealed class Uploader(ApiClient api, Settings settings)
         try
         {
             foreach (var file in WowLocator.SavedVariableFiles(dir))
+            try
             {
                 var key = Privacy.FileKey(file);
                 // 1.0.11: oförändrad fil känns igen med en strömmad hash – hela filen läses bara när den har ändrats.
@@ -129,9 +139,17 @@ public sealed class Uploader(ApiClient api, Settings settings)
                 settings.LastUploadUtc = DateTime.UtcNow;
                 settings.Save();
             }
+            catch (Exception ex) when (IsPerFile(ex))
+            {
+                // 1.0.12: en för stor eller avvisad fil stoppar inte längre övriga konton, hotfix och auktionspriser.
+                report.FilesRejected++;
+                report.Error ??= ex;
+                UploadLog.Append("ladda-upp", 0, "", "skipped:" + ((ScoutException)ex).Code);
+            }
 
             if (settings.UploadHotfix)
                 foreach (var file in WowLocator.HotfixFiles(dir))
+                try
                 {
                     var key = Privacy.FileKey(file);
                     // 1.0.11: hotfix-cachen kan vara flera MB – oförändrad känns igen med strömmad hash utan att läsas in.
@@ -153,19 +171,23 @@ public sealed class Uploader(ApiClient api, Settings settings)
                     if (res.Stored) report.HotfixStored++;
                     settings.Save();
                 }
+                catch (Exception ex) when (IsPerFile(ex))
+                {
+                    report.Error ??= ex;
+                    UploadLog.Append("hotfix", 0, "", "skipped:" + ((ScoutException)ex).Code);
+                }
 
             if (settings.ShareAuctionPrices && SafeFs.AuctionFilesAllowed)
                 await SyncAuctionsAsync(dir, report, ct);
 
             // Inga nätfel: nollställ backoff-kön (ett avvisat svar är inte ett nätfel och schemalägger inget).
-            settings.RetryAttempts = 0;
-            settings.NextRetryUtc = null;
-            settings.Save();
+            ClearRetry();
         }
         catch (ApiException ex)
         {
             report.Error = ex;
             if (ex.Transient) Schedule(report);
+            else ClearRetry();
         }
         catch (IOException ex)
         {
@@ -175,10 +197,18 @@ public sealed class Uploader(ApiClient api, Settings settings)
         catch (UnauthorizedAccessException ex)
         {
             report.Error = new ScoutException(ErrorCodes.Io, inner: ex);
+            ClearRetry();
         }
         catch (SafeFsException ex)
         {
             report.Error = ex; // åtkomst utanför det tillåtna – skyddet slog till, inget skickades
+            ClearRetry();
+        }
+        catch (ScoutException ex)
+        {
+            // 1.0.12: t.ex. file-too-large utanför fil-looparna. Fångades inte alls tidigare.
+            report.Error = ex;
+            ClearRetry();
         }
         finally { _gate.Release(); }
         return report;
@@ -202,7 +232,9 @@ public sealed class Uploader(ApiClient api, Settings settings)
             byte[] bytes = ScoutStats.ReadShared(file);
             var sha = ApiClient.Sha256Hex(bytes);
             if (prevSha == sha) continue;
-            var read = reader.Read(bytes, mtime, AuctionTimeZone);
+            AuctionReadResult read;
+            try { read = reader.Read(bytes, mtime, AuctionTimeZone); }
+            catch (Exception ex) when (IsPerFile(ex)) { report.Error ??= ex; continue; }
             if (!read.Complete) { report.FilesIncomplete++; continue; }
             DateOnly? mark = settings.AuctionDay.TryGetValue(key, out var w)
                 && DateOnly.TryParseExact(w, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var wd) ? wd : null;
@@ -242,6 +274,18 @@ public sealed class Uploader(ApiClient api, Settings settings)
             settings.AuctionDay[key] = rows.Max(r => r.Day).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
             settings.Save();
         }
+    }
+
+    /// <summary>
+    /// 1.0.12: nollställ backoff-kön. Tidigare nollställdes den bara när en körning lyckades helt, så ett nätfel följt
+    /// av ett bestående fel lämnade <see cref="RetryDue"/> sant – och appen försökte igen var 15:e sekund, för alltid.
+    /// </summary>
+    private void ClearRetry()
+    {
+        if (settings.RetryAttempts == 0 && settings.NextRetryUtc is null) return;
+        settings.RetryAttempts = 0;
+        settings.NextRetryUtc = null;
+        try { settings.Save(); } catch { }
     }
 
     private void Schedule(SyncReport report)

@@ -53,6 +53,8 @@ public sealed class Settings
     public string CloseAction { get; set; } = "tray";
     /// <summary>Har tipset "körs i bakgrunden" visats en gång?</summary>
     public bool TrayHintShown { get; set; }
+    /// <summary>1.0.12: frågan "Starta med Windows?" har ställts (välkomstskärmen eller en gång efter uppdatering).</summary>
+    public bool AutostartAsked { get; set; }
     /// <summary>Spärrade addonversioner från senaste versionsinfo.</summary>
     public List<string> BlockedAddons { get; set; } = new();
 

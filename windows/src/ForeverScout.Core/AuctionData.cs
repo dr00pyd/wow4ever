@@ -310,7 +310,10 @@ public sealed class AuctioneerReader : IAuctionReader
             var faction = AuctionData.Faction(serverKey[(us + 1)..]);
             if (realm is null || faction is null) continue;
             if (rd.Num("dailypush") is not double push || rd.Table("daily") is not { } daily || daily.Count == 0) continue;
-            var startUtc = DateTime.UnixEpoch.AddSeconds(push - PushTime);
+            // 1.0.12: orimlig tid (t.ex. 1e30) gav ArgumentOutOfRangeException ur AddSeconds.
+            var secs = push - PushTime;
+            if (!double.IsFinite(secs) || secs < 0 || secs > 253_402_300_799d) { problem = "auctioneer-window"; continue; }
+            var startUtc = DateTime.UnixEpoch.AddSeconds(secs);
             var start = TimeZoneInfo.ConvertTimeFromUtc(startUtc, tz);
             if (start > end.AddHours(1) || start.Date != end.Date) { problem = "auctioneer-window"; continue; }
             var day = DateOnly.FromDateTime(end);

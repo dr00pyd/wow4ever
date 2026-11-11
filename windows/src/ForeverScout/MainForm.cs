@@ -340,6 +340,7 @@ internal sealed class MainForm : Form
     {
         bool uploading = _app.Uploading;
         bool pending = s.Count > s.Uploaded;
+        if (_app.CurrentDir is null) return (S("st.nodir"), Theme.Warn); // 1.0.12: inte "Väntar på /reload" utan spelmapp
         if (s.Count == 0)
             return _app.HasSavedVariables || s.Kind == DataKind.Hotfix ? (S("st.nodata"), Theme.Faint) : (S("st.waiting"), Theme.Muted);
         if (uploading && pending) return (S("st.uploading"), Theme.Gold);
@@ -443,13 +444,21 @@ internal sealed class MainForm : Form
         _addonPill.Set(inst != null ? F("pill.addon", inst) : dir is null ? S("game.none") : S("pill.noaddon"), inst != null ? Theme.Ok : Theme.Err);
         _footAddon.Text = "● " + (inst != null ? F("pill.addon", inst) : S("pill.noaddon"));
         _footAddon.ForeColor = inst != null ? Theme.Ok : Theme.Warn;
-        _footUpload.Text = "● " + (_flash ?? (_app.State == TrayState.Normal && dir != null && _app.ErrorText is null && _app.Settings.NextRetryUtc is null && !_app.Settings.AutoUploadPaused && _app.Settings.LastUploadUtc is null ? S("footer.ok") : _app.StatusText));
-        _footUpload.ForeColor = _flash != null ? Theme.Ok : _app.State == TrayState.Normal && dir != null && !_app.Settings.AutoUploadPaused ? Theme.Ok : _app.StatusColor;
-        _footNext.Text = _app.Settings.NextRetryUtc is { } next ? F("retry", When(next)) : S("footer.next");
-        _footNext.ForeColor = _app.Settings.NextRetryUtc is null ? Theme.Muted : Theme.Warn;
+        // 1.0.12: "Allt fungerar" bara när det stämmer – spelmapp, addon på plats, addonen har sparat, automatisk
+        // uppladdning på och inga fel. Annars visas det som faktiskt gäller.
+        bool healthy = _app.State == TrayState.Normal && dir != null && inst != null && _app.HasSavedVariables
+                       && _app.ErrorText is null && _app.Settings.NextRetryUtc is null && _app.AutoUploadActive;
+        _footUpload.Text = "● " + (_flash ?? (healthy && _app.Settings.LastUploadUtc is null ? S("footer.ok") : _app.StatusText));
+        _footUpload.ForeColor = _flash != null || healthy ? Theme.Ok : _app.StatusColor;
+        _footNext.Text = _app.Settings.NextRetryUtc is { } next ? F("retry", When(next))
+            : dir is null ? S("footer.next.nodir")
+            : !_app.AutoUploadActive ? S("footer.next.manual")
+            : S("footer.next");
+        _footNext.ForeColor = _app.Settings.NextRetryUtc is null && dir != null && _app.AutoUploadActive ? Theme.Muted : Theme.Warn;
         bool busy = _app.Uploading;
         _upload.Enabled = !busy;
-        _upload.Text = busy ? S("uploading") : "↑  " + S("upload");
+        // 1.0.12: utan spelmapp är knappen vägen framåt (den öppnar redan valet av katalog) – säg det.
+        _upload.Text = busy ? S("uploading") : dir is null ? "📁  " + S("pick.dir") : "↑  " + S("upload");
         _upload.Invalidate();
         ShowLastUpload();
     }

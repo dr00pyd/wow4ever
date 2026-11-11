@@ -262,7 +262,8 @@ public sealed class LuaParser
             int hs = _p;
             while (!Eof && char.IsAsciiHexDigit(_s[_p])) _p++;
             if (_p == hs) throw Error("bad-hex");
-            var hv = long.Parse(_s[hs.._p], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            // 1.0.12: fler än 16 hexsiffror gav OverflowException, som ingen anropare fångade.
+            if (!long.TryParse(_s[hs.._p], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hv)) throw Error("bad-hex");
             return neg ? -hv : hv;
         }
         int ns = _p;
@@ -325,8 +326,15 @@ public sealed class LuaParser
                     if (Peek() != '{') throw Error("bad-u-escape");
                     int end = _s.IndexOf('}', _p);
                     if (end < 0) throw Error("bad-u-escape");
-                    var cp = Convert.ToInt32(_s.Substring(_p + 1, end - _p - 1), 16);
-                    sb.Append(char.ConvertFromUtf32(cp));
+                    // 1.0.12: tomt, för långt, ogiltigt eller surrogat-värde gav undantag som ingen anropare fångade.
+                    var hex = _s.Substring(_p + 1, end - _p - 1);
+                    if (hex.Length is 0 or > 8 || !hex.All(char.IsAsciiHexDigit)
+                        || !int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var cp)
+                        || cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+                        throw Error("bad-u-escape");
+                    var ch = char.ConvertFromUtf32(cp);
+                    // Bytläge: strängen är UTF-8-byte som Latin-1-tecken och avkodas i Finish – lägg in UTF-8-byte.
+                    sb.Append(_bytes ? Encoding.Latin1.GetString(Encoding.UTF8.GetBytes(ch)) : ch);
                     _p = end + 1;
                     break;
                 }

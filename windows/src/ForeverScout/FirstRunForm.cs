@@ -19,6 +19,10 @@ internal sealed class FirstRunForm : Form
     private readonly Label _nameError = Err();
     private readonly Label _codeError = Err();
     private readonly Label _quick;
+    /// <summary>1.0.12: "Starta med Windows" – förvald, synlig. Utan den skickades inget efter en omstart av datorn.</summary>
+    private readonly CheckBox _autostart = new() { Checked = true, AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) };
+
+    public bool StartWithWindows => _autostart.Checked;
 
     public Contributor? Result { get; private set; }
 
@@ -94,6 +98,11 @@ internal sealed class FirstRunForm : Form
         h.Controls.Add(Separator(300));
         h.Controls.Add(new SmallTitle(S("onb.privacy.title")));
         h.Controls.Add(Para(S("onb.privacy.text"), 300));
+        h.Controls.Add(Separator(300));
+        _autostart.Text = S("onb.autostart");
+        _autostart.Font = Theme.Ui(10f);
+        _autostart.ForeColor = ColorTranslator.FromHtml("#E5D7CD");
+        h.Controls.Add(_autostart);
         helps.Controls.Add(h);
         var tavern = new RoundedPanel { FillColor = Theme.GoldSoft, BorderColor = Theme.GoldEdge, Radius = 8, AutoSize = true, Dock = DockStyle.Top, Padding = new Padding(16, 14, 16, 14), Margin = new Padding(0, 16, 0, 0) };
         var tv = Stack();
@@ -121,7 +130,7 @@ internal sealed class FirstRunForm : Form
         Controls.Add(footer);
         Controls.Add(hero);
 
-        AcceptButton = _register;
+        AcceptButton = _browser; // 1.0.12: Enter väljer huvudvägen (guldknappen), inte namnregistreringen
         _browser.Click += (_, _) =>
         {
             // Nyckeln sparas av Program (samma väg som namn och kod), därför ingen store här.
@@ -148,7 +157,7 @@ internal sealed class FirstRunForm : Form
         _code.Box.Enter += (_, _) => AcceptButton = _link;
         _name.Box.Enter += (_, _) => AcceptButton = _register;
         HandleCreated += (_, _) => Theme.DarkTitleBar(this);
-        Shown += (_, _) => _name.Box.Focus();
+        Shown += (_, _) => _browser.Focus();
     }
 
     /// <summary>Visar ett fel som det ser ut efter ett svar från servern (för skärmbilder/test).</summary>

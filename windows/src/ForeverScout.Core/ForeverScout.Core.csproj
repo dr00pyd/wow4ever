@@ -9,7 +9,7 @@
     <RootNamespace>ForeverScout.Core</RootNamespace>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
-    <Version>1.0.11</Version>
+    <Version>1.0.12</Version>
     <DebugType>embedded</DebugType>
     <DefineConstants Condition="'$(ScoutVariant)' == 'lite'">$(DefineConstants);SCOUT_LITE</DefineConstants>
   </PropertyGroup>
