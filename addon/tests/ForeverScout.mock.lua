@@ -80,7 +80,7 @@ local function fire(event, ...) frame.script(frame, event, ...) end
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.8", "addonversion 1.0.8")
+check(db.addon == "1.0.9", "addonversion 1.0.9")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
 for _, e in ipairs({ "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "MAIL_SHOW", "AUCTION_HOUSE_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
@@ -93,7 +93,7 @@ do
   check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
   fire("PLAYER_LOGIN")
   DEFAULT_CHAT_FRAME.AddMessage = old
-  check(#said == 1 and said[1]:find("1.0.8", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
+  check(#said == 1 and said[1]:find("1.0.9", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------
@@ -352,7 +352,51 @@ clock = clock + 300
 fire("UPDATE_MOUSEOVER_UNIT")
 check(#gm.i == 1, "samma instans sparas en gång")
 units.mouseover = nil
+
+-- 1.0.9: vilken varelse som är vilken boss (namnen döljs i instanser, encounter-id:t gör det inte)
+local function bossRows(e, s)
+  local out = {}
+  for _, b in ipairs(db.bosses) do if b.e == e and (not s or b.s == s) then out[#out + 1] = b end end
+  return out
+end
+units.boss1 = { guid = "Creature-0-4372-3065-77-263396-0000000050", name = "Faldrim Anvilmar" }
+fire("ENCOUNTER_START", 3493, "Faldrim Anvilmar", 1, 5)
+local fb = bossRows(3493, "u")[1]
+check(fb and fb.id == 263396 and fb.im == 3065 and fb.o == 1 and fb.r == nil and fb.n == nil and fb.t and fb.q, "boss: boss1 under fighten ger encounter → varelse")
+fire("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+fire("ENCOUNTER_END", 3493, "Faldrim Anvilmar", 1, 5, 1)
+check(#bossRows(3493, "u") == 1, "boss: samma koppling sparas en gång")
+units.boss1 = { guid = SECRET }
+fire("ENCOUNTER_START", 3495, "Magmatus", 1, 5)
+fire("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+check(#bossRows(3495, "u") == 0, "boss: dold enhet (secret value) ger ingen koppling")
+units.boss1 = nil
+fire("ENCOUNTER_END", 3495, "Magmatus", 1, 5, 1)
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263438-0000000060" } })
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263390-0000000061" } })
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263438-0000000062" } })
+local c1 = bossRows(3495, "l")
+check(#c1 == 2 and c1[1].id == 263438 and c1[1].o == 1 and c1[2].id == 263390 and c1[2].o == 2 and c1[1].r and c1[1].r == c1[2].r, "boss: första lootade varelserna efter vunnen fight blir kandidater i ordning, en gång var, samma fight")
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263389-0000000063" } })
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263466-0000000064" } })
+check(#bossRows(3495, "l") == 3, "boss: högst tre kandidater per fight")
+fire("ENCOUNTER_END", 3496, "Durgen Dirgehammer", 1, 5, 0)
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263470-0000000065" } })
+check(#bossRows(3496) == 0, "boss: förlorad fight ger inga kandidater")
+fire("ENCOUNTER_END", 3494, "Plunder", 1, 5, 1)
+clock = clock + 301
+lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263397-0000000066" } })
+check(#bossRows(3494, "l") == 0, "boss: loot efter tidsfönstret är ingen kandidat")
+local named = false
+for _, b in ipairs(db.bosses) do for _, v in pairs(b) do if v == "Faldrim Anvilmar" or v == "Magmatus" then named = true end end end
+check(not named, "boss: inga namn sparas")
 instance = nil
+fire("ENCOUNTER_START", 2741, "Rhahk'Zor", 1, 5)
+units.boss1 = { guid = "Creature-0-4372-36-77-644-0000000070" }
+fire("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
+units.boss1 = nil
+check(#bossRows(2741) == 0, "boss: utanför instans sparas ingenting")
+fire("ENCOUNTER_END", 2741, "Rhahk'Zor", 1, 5, 0)
 
 -- Kills: sedd levande som mål, sedan död med vår tagg; CanLootUnit efter en sekund
 local K1 = "Creature-0-4372-0-48-113-0000000101"
@@ -522,7 +566,7 @@ fire("PLAYER_SOFT_INTERACT_CHANGED", nil, "GameObject-0-1-2-3-1732-0000000001")
 combat = false
 check(db.objects[1732] == nil, "soft interact: inget i strid")
 
-for _, e in ipairs({ "UNIT_HEALTH", "ENCOUNTER_END", "CHAT_MSG_SYSTEM", "CONFIRM_BINDER", "BATTLEFIELDS_SHOW", "CONFIRM_TALENT_WIPE",
+for _, e in ipairs({ "UNIT_HEALTH", "ENCOUNTER_END", "ENCOUNTER_START", "INSTANCE_ENCOUNTER_ENGAGE_UNIT", "CHAT_MSG_SYSTEM", "CONFIRM_BINDER", "BATTLEFIELDS_SHOW", "CONFIRM_TALENT_WIPE",
                      "OPEN_TABARD_FRAME", "ITEM_TEXT_BEGIN", "PLAYER_SOFT_INTERACT_CHANGED", "PLAYER_REGEN_ENABLED" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
 end

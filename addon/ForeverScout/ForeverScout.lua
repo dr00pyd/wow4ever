@@ -14,7 +14,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.8"
+local VERSION = "1.0.9"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -38,6 +38,8 @@ local KILL_LOOT_DELAY = 1     -- seconds after a kill before CanLootUnit is aske
 local MOB_EXACT = 8           -- exact spots per mob (player within interact distance of it)
 local EXACT_RADIUS = 1        -- map-% : an exact spot this close to a saved one (same map) is the same spot
 local ENC_WINDOW = 300        -- seconds after a won ENCOUNTER_END a loot window with hidden sources may be the boss
+local MAX_BOSSES = 300        -- 1.0.9: encounter → creature rows (bosses), oldest dropped
+local BOSS_CANDIDATES = 3     -- 1.0.9: first corpses looted after a won encounter that are noted as candidates
 local MAX_LATENCY = 300       -- ms : loot is not recorded above this (slot and source data can be stale)
 local DRUNK_MAX = 900         -- seconds a "you feel drunk" message is trusted without a "sober again"
 local TAG_SALT = "ForeverScout-1.0.5|"  -- per-version salt for guidTag (the tag is never the GUID)
@@ -56,6 +58,7 @@ local session = {
   mobNear = {},               -- GUID -> true: an exact spot was tried for this mob (memory only)
   softSeen = {}, softN = 0,   -- GUID -> GetTime() of the last soft-interact look at an object (memory only)
   encounter = nil,            -- { id, name, at } of the last won ENCOUNTER_END (memory only; the name is never saved)
+  fight = nil,                -- 1.0.9: { id } of the encounter in progress (ENCOUNTER_START … ENCOUNTER_END)
   drunkAt = nil,              -- GetTime() of the last "you feel drunk" system message
   vendorScans = 0, vendorQuietUntil = 0, vendorRR = nil,
   objPending = {},            -- questID -> retries left, for objectives that arrived without an item name
@@ -947,6 +950,8 @@ local SECRET_SOURCE = "?"   -- loot slots whose source GUID the game hides (secr
 
 -- 1.0.8: defined after the mob and kill code (see "Looted in an instance" below).
 local noteLootedMob
+-- 1.0.9: defined with the boss code (see "Bosses" below).
+local noteBossCandidate
 
 -- 1.0.5: who dropped loot whose source GUIDs are hidden? First the dead target when its GUID is readable, then the
 -- boss of a won encounter (ENCOUNTER_END) in the last ENC_WINDOW seconds – once per encounter, and only if a dead
@@ -1036,6 +1041,8 @@ local function onLootOpened()
         -- 1.0.8: inside an instance the game hides targets from addons, so the mob and the kill are noted here,
         -- where the corpse's GUID is readable.
         if kind == "npc" and src == "npc" and noteLootedMob then noteLootedMob(guid, id, grp) end
+        -- 1.0.9: a creature looted right after a won encounter may be its boss.
+        if kind == "npc" and src == "npc" and instanceMap() then noteBossCandidate(id) end
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
           session.sentName, session.sentAt = nil, 0   -- used once (L13)
@@ -1047,9 +1054,64 @@ local function onLootOpened()
   if gatherSrc == "dis" then session.disItem = nil end
 end
 
+---------------------------------------------------------------------------
+-- Bosses (1.0.9): which creature is which encounter
+---------------------------------------------------------------------------
+
+-- Inside instances the game hides creature names from addons, so the site cannot tell which creature id is which boss
+-- (The Hall of Thanes, 2026-11-11). The encounter id is public and the client knows its name (DungeonEncounter).
+-- Two ways to tie them together, both saved as { e = encounter, id = creature, im = instance, s = source, o, r, t, q }:
+--   s = "u": the encounter's own units boss1–boss5 during the fight, o = the unit number – certain when readable;
+--   s = "l": the first BOSS_CANDIDATES creatures looted within ENC_WINDOW after a WON encounter, o = order (1 = first)
+--            and r = the fight (the same r for the candidates of one fight) – a candidate only; the server needs
+--            several fights that agree before it believes it.
+-- Never a name, a GUID or a position.
+local function pushBoss(e, id, s, o, r)
+  local im = instanceMap()
+  if not im or not e or not id then return end
+  local list = db.bosses
+  if s == "u" then
+    for _, b in ipairs(list) do if b.s == "u" and b.e == e and b.id == id then return end end  -- once is enough
+  end
+  list[#list + 1] = { e = e, id = id, im = im, s = s, o = o, r = r, t = floor(now() / 86400) * 86400, q = nextSeq() }
+  while #list > MAX_BOSSES do table.remove(list, 1) end
+  touch("boss", tostring(e))
+end
+
+local function scanBossUnits()
+  local f = session.fight
+  if not f then return end
+  for i = 1, 5 do
+    local kind, id = parseGuid(try(UnitGUID, "boss" .. i))
+    if kind == "npc" and id then pushBoss(f.id, id, "u", i) end
+  end
+end
+
+-- ENCOUNTER_START(encounterID, name, difficultyID, groupSize)
+local function onEncounterStart(encounterId)
+  encounterId = num(encounterId)
+  if not encounterId or encounterId <= 0 then session.fight = nil; return end
+  session.fight = { id = encounterId }
+  scanBossUnits()
+end
+
+-- After a won encounter: the first corpses looted are boss candidates (see above).
+noteBossCandidate = function(id)
+  local e = session.encounter
+  if not e or not id or (num(try(GetTime)) or 0) - e.at > ENC_WINDOW then return end
+  e.cands = e.cands or {}
+  if e.cands[id] or #e.cands >= BOSS_CANDIDATES then return end
+  e.cands[id] = true
+  e.cands[#e.cands + 1] = id
+  e.run = e.run or floor(now())
+  pushBoss(e.id, id, "l", #e.cands, e.run)
+end
+
 -- ENCOUNTER_END(encounterID, name, difficultyID, groupSize, success): a won encounter may own the next loot window
 -- whose sources are hidden (hiddenSource). The name is only compared, never saved.
 local function onEncounterEnd(encounterId, name, _, _, success)
+  scanBossUnits()   -- 1.0.9: last chance to read boss1–boss5 before they disappear
+  session.fight = nil
   encounterId = num(encounterId)
   if not encounterId or encounterId <= 0 or num(success) ~= 1 then return end
   session.encounter = { id = encounterId, name = str(name), at = num(try(GetTime)) or 0 }
@@ -1474,7 +1536,7 @@ local function newInstallId()
   return table.concat(hex)
 end
 
-local TABLES = { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail", "kills" }
+local TABLES = { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail", "kills", "bosses" }
 
 local function ensureTables(d)
   for _, k in ipairs(TABLES) do
@@ -1656,6 +1718,8 @@ local handlers = {
   UNIT_HEALTH = function(unit) if unit == "target" then watchTarget() end end,
   PLAYER_REGEN_ENABLED = watchTarget,
   ENCOUNTER_END = onEncounterEnd,
+  ENCOUNTER_START = onEncounterStart,
+  INSTANCE_ENCOUNTER_ENGAGE_UNIT = scanBossUnits,
   CHAT_MSG_SYSTEM = onSystemMessage,
   CONFIRM_BINDER = function() noteUnit("npc", { innkeeper = true }) end,
   BATTLEFIELDS_SHOW = function() noteUnit("npc", { battlemaster = true }) end,
