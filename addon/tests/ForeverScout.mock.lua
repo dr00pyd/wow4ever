@@ -77,10 +77,15 @@ local ns = {}
 assert(loadfile(DIR .. "Locale.lua"))("ForeverScout", ns)
 assert(loadfile(DIR .. "ForeverScout.lua"))("ForeverScout", ns)
 local function fire(event, ...) frame.script(frame, event, ...) end
+-- 1.0.10: poster utan position från äldre versioner (inne i instanser) saknade löpnummer
+ForeverScoutDB = { seq = 7, objects = { [999001] = { n = "Old Chest" }, [999003] = { n = "Placed Chest", spots = { { m = 1429, x = 1, y = 1, t = 1, q = 3 } } } },
+                   npcs = { [999002] = { n = "Old Vendor" } } }
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.9", "addonversion 1.0.9")
+check(db.addon == "1.0.10", "addonversion 1.0.10")
+check(db.objects[999001].q and db.objects[999001].q > 7 and db.npcs[999002].q and db.npcs[999002].q > 7, "1.0.10: gamla poster utan position får löpnummer vid start")
+check(db.objects[999003].q == nil, "1.0.10: poster med position behåller löpnumret i sina platser")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
 for _, e in ipairs({ "PLAYER_TARGET_CHANGED", "UPDATE_MOUSEOVER_UNIT", "MAIL_SHOW", "AUCTION_HOUSE_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
@@ -93,7 +98,7 @@ do
   check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
   fire("PLAYER_LOGIN")
   DEFAULT_CHAT_FRAME.AddMessage = old
-  check(#said == 1 and said[1]:find("1.0.9", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
+  check(#said == 1 and said[1]:find("1.0.10", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------
@@ -317,6 +322,14 @@ units.target = { guid = HALL, name = "Plunder", dead = true, level = 30 }
 lootWindow({ { item = 2589, guid = HALL } })
 local hl = db.loot[#db.loot]
 check(hl.src == "npc" and hl.id == 250001 and hl.im == 3065 and hl.m == nil and hl.x == nil, "instans: loot får im, ingen position")
+-- 1.0.10: en kista lootad i instansen (ingen position) får ett löpnummer, så appen kan markera den som uppladdad
+local seqBefore = db.seq
+lootWindow({ { item = 2589, guid = "GameObject-0-4372-3065-77-266001-0000000080" } })
+local ch = db.objects[266001]
+check(ch and ch.q and ch.q > seqBefore and (ch.spots == nil or #ch.spots == 0), "1.0.10: objekt utan position i instans får löpnummer")
+local chq = ch and ch.q
+lootWindow({ { item = 2589, guid = "GameObject-0-4372-3065-77-266001-0000000081" } })
+check(db.objects[266001].q == chq, "1.0.10: oförändrat objekt får inget nytt löpnummer")
 -- 1.0.8: spelet döljer mål för addons i instanser – mobben och killen noteras när kroppen lootas
 local pm = db.mobs[250001]
 check(pm and pm.n == "Plunder" and pm.i and pm.i[1] == 3065 and pm.lmin == 30 and (pm.a == nil or #pm.a == 0), "instans: lootad mob sparas med namn, level och instans – ingen plats")

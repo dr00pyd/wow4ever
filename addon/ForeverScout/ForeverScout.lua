@@ -14,7 +14,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.9"
+local VERSION = "1.0.10"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -352,11 +352,23 @@ local function noteStats(rec, unit, l)
   return changed
 end
 
+-- 1.0.10: a record without any position (an object or NPC inside an instance, where the game gives no map position)
+-- had no seq at all, so Forever Scout could never mark it as uploaded and showed "Ready to upload" forever. Such a
+-- record gets its own seq (q) when it is created or changed; with a position the spots carry the seq as before.
+local function seqIfNoSpot(rec, changed)
+  local spots = rec.spots
+  if type(spots) == "table" and #spots > 0 then return end
+  if changed or not rec.q then rec.q = nextSeq() end
+end
+
 local function noteObject(id, name)
   local rec = db.objects[id]
+  local isNew = not rec
   if not rec then rec = {}; db.objects[id] = rec end
+  local renamed = name and rec.n ~= name
   if name then rec.n = name end
   local added = addSpot(rec)
+  if not added then seqIfNoSpot(rec, isNew or renamed) end
   touch("object", rec.n or tostring(id))
   return rec, added
 end
@@ -366,6 +378,7 @@ local function noteUnit(unit, roles)
   local kind, id = parseGuid(try(UnitGUID, unit))
   if kind == "npc" then
     local rec = db.npcs[id]
+    local npcNew = not rec
     if not rec then rec = {}; db.npcs[id] = rec end
     rec.n = str(try(UnitName, unit)) or rec.n
     local s = subtitle(unit)
@@ -377,7 +390,7 @@ local function noteUnit(unit, roles)
     rec.pf = str(try(UnitFactionGroup, "player")) or rec.pf
     rec.roles = rec.roles or {}
     if roles then for k, v in pairs(roles) do if v then rec.roles[k] = true end end end
-    addSpot(rec)
+    if not addSpot(rec) then seqIfNoSpot(rec, npcNew) end
     touch("npc", rec.n or tostring(id))
     return kind, id
   elseif kind == "object" then
@@ -1557,6 +1570,12 @@ local function initDb()
   if type(db.install) ~= "string" or #db.install < 8 then db.install = newInstallId() end
   db.seq = tonumber(db.seq) or 0
   ensureTables(db)
+  -- 1.0.10: records saved by earlier versions without any position also had no seq (see seqIfNoSpot) – give them one.
+  for _, k in ipairs({ "npcs", "objects" }) do
+    for _, rec in pairs(db[k]) do
+      if type(rec) == "table" then seqIfNoSpot(rec, false) end
+    end
+  end
   session.mobCount = 0
   for _ in pairs(db.mobs) do session.mobCount = session.mobCount + 1 end
   if type(ForeverScoutOpt) ~= "table" then ForeverScoutOpt = { char = false } end
