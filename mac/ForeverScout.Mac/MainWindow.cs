@@ -228,6 +228,7 @@ internal sealed class MainWindow : Window
     private (string, Color) RowStatus(KindStats s)
     {
         bool pending = s.Count > s.Uploaded;
+        if (_app.CurrentDir is null) return (T("st.nodir"), Look.Warn); // 1.0.12 (H5): inte "Väntar på /reload" utan spelkatalog
         if (s.Count == 0)
             return _app.HasSavedVariables || s.Kind == DataKind.Hotfix ? (T("st.nodata"), Look.Faint) : (T("st.waiting"), Look.Muted);
         if (_app.Uploading && pending) return (T("st.uploading"), Look.Gold);
@@ -325,16 +326,29 @@ internal sealed class MainWindow : Window
         _pill.Background = Look.B(inst != null ? Look.OkSoft : Look.ErrSoft);
         _footAddon.Text = "● " + (inst != null ? TF("pill.addon", inst) : T("pill.noaddon"));
         _footAddon.Foreground = Look.B(inst != null ? Look.Ok : Look.Warn);
-        bool calm = _app.State == TrayState.Normal && dir != null && !_app.Settings.AutoUploadPaused;
-        _footUpload.Text = "● " + (_flash ?? (calm && _app.ErrorText is null && _app.Settings.NextRetryUtc is null && _app.Settings.LastUploadUtc is null ? T("footer.ok") : _app.StatusText));
-        _footUpload.Foreground = Look.B(_flash != null ? Look.Ok : calm ? Look.Ok : _app.StatusColor);
-        _footNext.Text = _app.Settings.NextRetryUtc is { } next ? TF("retry", Strings.When(next)) : T("footer.next");
-        _footNext.Foreground = Look.B(_app.Settings.NextRetryUtc is null ? Look.Muted : Look.Warn);
+        // 1.0.12 (H4): "Allt fungerar" bara när det stämmer – spelkatalog, addon på plats, addonen har sparat, automatisk
+        // uppladdning på och inga fel. Annars visas det som faktiskt gäller.
+        var st = _app.Settings;
+        bool healthy = Rules112.Healthy(_app.State == TrayState.Normal, dir != null, inst != null, _app.HasSavedVariables,
+            _app.ErrorText != null, st.NextRetryUtc != null, _app.AutoUploadActive);
+        _footUpload.Text = "● " + (_flash ?? (healthy && st.LastUploadUtc is null ? T("footer.ok") : _app.StatusText));
+        _footUpload.Foreground = Look.B(_flash != null || healthy ? Look.Ok : _app.StatusColor);
+        var nextKey = Rules112.FooterNextKey(st.NextRetryUtc != null, dir != null, _app.AutoUploadActive);
+        _footNext.Text = st.NextRetryUtc is { } next ? TF(nextKey, Strings.When(next)) : T(nextKey);
+        _footNext.Foreground = Look.B(nextKey == "footer.next" ? Look.Muted : Look.Warn);
         bool busy = _app.Uploading;
         _upload.IsEnabled = !busy;
-        _upload.Content = busy ? T("uploading") : "↑  " + T("upload");
+        // 1.0.12 (H5): utan spelkatalog är knappen vägen framåt (den öppnar valet av katalog) – säg det.
+        var buttonKey = Rules112.MainButtonKey(busy, dir != null);
+        _upload.Content = buttonKey switch { "uploading" => T("uploading"), "pick.dir" => FolderGlyph + T("pick.dir"), _ => "↑  " + T("upload") };
         ShowLastUpload();
     }
+
+#if LINUX
+    private const string FolderGlyph = ""; // alla skrivbord har inte ett färgemoji-typsnitt – hellre ingen symbol än en ruta
+#else
+    private const string FolderGlyph = "📁  ";
+#endif
 
     /// <summary>Kort meddelande i statusraden (t.ex. "Inget nytt att ladda upp", "Uppdaterad till …").</summary>
     public void Flash(string text, int ms = 5000)

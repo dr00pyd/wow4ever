@@ -26,7 +26,7 @@ internal static class Program
         void Activate() => app?.OnUi(() => app.ShowWindow());
         bool restarted = args.Contains("--restarted");
         // 1.0.12: startad av användaren (dubbelklick, Start-menyn) – inte av autostart (--tray/--minimized) eller en omstart.
-        bool userStarted = !restarted && !args.Contains("--tray") && !args.Contains("--minimized") && !shots;
+        bool userStarted = !restarted && !args.Contains("--tray") && !args.Contains("--minimized") && !shots && !Autostart.LaunchedAtLogin();
         // Efter en uppdatering/omstart: vänta på att den gamla processen släpper mutexen (den avslutar sig själv).
         var instance = SingleInstance.TryAcquire(InstanceId, Activate, restarted ? TimeSpan.FromSeconds(30) : null);
 
@@ -59,7 +59,7 @@ internal static class Program
 
         // Retry-försök under självuppdateringen loggas (steg, försök, typ, HResult – aldrig sökvägar).
         IoRetry.OnRetry = (step, attempt, ex) => UploadLog.Append("update", 0, "-", $"retry step={step} attempt={attempt} {ex.GetType().Name} 0x{ex.HResult:X8}");
-        SelfUpdater.CleanupOld();
+        if (!BuildInfo.IsStore) SelfUpdater.CleanupOld(); // Store: paketkatalogen är skrivskyddad, inga gamla exe-filer
         using var api = new ApiClient { Key = KeyStore.Load() };
 
         bool firstRun = false;
@@ -70,7 +70,7 @@ internal static class Program
             ContributorStore.Save(who, api, settings, KeyStore.Save); // samma väg för namn, kod och webbläsaren
             firstRun = true;
             settings.AutostartAsked = true;
-            try { SafeFs.SetAutostart(first.StartWithWindows); }
+            try { Autostart.Set(first.StartWithWindows); }
             catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
         }
 

@@ -61,6 +61,11 @@ internal sealed class App : Application
             });
             if (keyFailed) await Dialogs.Info(null, Strings.S("err.io"));
             firstRun = true;
+            // 1.0.12 (H1): kryssrutan på välkomstskärmen (förvald) – frågan räknas som ställd.
+            s.Settings.AutostartAsked = true;
+            try { s.Settings.Save(); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SafeFsException) { }
+            try { SafeFs.SetAutostart(first.StartAtLogin); }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { }
         }
 
         var scout = new ScoutController(desktop, s.Settings, s.Api);
@@ -78,9 +83,12 @@ internal sealed class App : Application
         s.Settings.LastRunVersion = current;
         s.Settings.Save();
         if (updated) scout.AnnounceUpdate(updatedFrom, showWindow: !quiet);
-        await scout.StartAsync(showWindow: ShowAtStart || firstRun || (!quiet && (s.Restarted || updated)));
+        // 1.0.12: bara en start som användaren själv gjort (inte autostart, inte omstart efter uppdatering) får fråga om
+        // autostart; utan spelkatalog öppnas dialogen bara då eller när fönstret visas.
+        await scout.StartAsync(showWindow: ShowAtStart || firstRun || (!quiet && (s.Restarted || updated)), userStarted: s.UserStarted);
     }
 }
 
 /// <summary>Det Program har förberett: inställningar, API-klienten, instanslåset och startflaggor.</summary>
-internal sealed record StartupState(Settings Settings, ApiClient Api, UnixInstance? Instance, bool Restarted, string? Message);
+/// <param name="UserStarted">1.0.12: startad av användaren (<see cref="Rules112.UserStarted"/>), inte av autostart eller en omstart.</param>
+internal sealed record StartupState(Settings Settings, ApiClient Api, UnixInstance? Instance, bool Restarted, string? Message, bool UserStarted = false);

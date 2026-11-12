@@ -120,11 +120,51 @@ internal static class KeyStore
     public static void Delete() { try { SafeFs.DeleteFile(PathFor); } catch (IOException) { } catch (SafeFsException) { } }
 }
 
-/// <summary>"Starta med Windows": värdet ForeverScout under HKCU\Software\Microsoft\Windows\CurrentVersion\Run (via SafeFs).</summary>
+/// <summary>
+/// "Starta med Windows": värdet ForeverScout under HKCU\Software\Microsoft\Windows\CurrentVersion\Run (via SafeFs).
+/// Store-versionen (MSIX) använder paketets startup task (AppxManifest: TaskId ForeverScoutStartup) – Run-värden från
+/// ett paket fungerar inte, och användaren styr den under Inställningar → Appar → Start.
+/// </summary>
 internal static class Autostart
 {
+#if SCOUT_STORE
+    private const string TaskId = "ForeverScoutStartup";
+
+    // WinRT-anropen körs på trådpoolen: att vänta på dem från UI-tråden (STA) kan annars låsa sig.
+    private static T Run<T>(Func<Task<T>> f) => Task.Run(f).GetAwaiter().GetResult();
+
+    public static bool IsEnabled
+    {
+        get
+        {
+            try
+            {
+                var state = Run(async () => (await Windows.ApplicationModel.StartupTask.GetAsync(TaskId)).State);
+                return state is Windows.ApplicationModel.StartupTaskState.Enabled or Windows.ApplicationModel.StartupTaskState.EnabledByPolicy;
+            }
+            catch (Exception) { return false; }
+        }
+    }
+
+    public static void Set(bool on) => Run(async () =>
+    {
+        var task = await Windows.ApplicationModel.StartupTask.GetAsync(TaskId);
+        if (on) await task.RequestEnableAsync();
+        else task.Disable();
+        return true;
+    });
+
+    /// <summary>Startad av Windows vid inloggning (startup task) – som --tray för den vanliga exe:n.</summary>
+    public static bool LaunchedAtLogin()
+    {
+        try { return Windows.ApplicationModel.AppInstance.GetActivatedEventArgs()?.Kind == Windows.ApplicationModel.Activation.ActivationKind.StartupTask; }
+        catch (Exception) { return false; }
+    }
+#else
     public static bool IsEnabled => SafeFs.AutostartEnabled;
     public static void Set(bool on) => SafeFs.SetAutostart(on);
+    public static bool LaunchedAtLogin() => false;
+#endif
 }
 
 /// <summary>Länkar till sajten (sv/en). Sluggarna följer lib/i18n/routes.ts.</summary>

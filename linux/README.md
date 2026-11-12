@@ -29,7 +29,7 @@ All fil- och processåtkomst går genom `SafeFs.cs` (samma statiska vakt, `Stati
 | `<spelkatalog>/Cache/ADB/*/DBCache.bin` | läsa |
 | `Interface`, `WTF/Account/*`, `…/SavedVariables`, `Cache/ADB/*` | bara existens och listning |
 | `~/.config/ForeverScout/**` (katalogen 0700; `$XDG_CONFIG_HOME` följs) | `settings.json`, `uploads.log`, `instance.lock`, `instance.sock`, `contributor-key` (0600) |
-| `~/.config/autostart/se.wow4ever.foreverscout.desktop` | bara när du kryssar i "Starta vid inloggning" (av som standard) |
+| `~/.config/autostart/se.wow4ever.foreverscout.desktop` | när "Starta vid inloggning" är på – från 1.0.12 förvalt på välkomstskärmen (går att kryssa ur), annars av tills du kryssar i den i Inställningar |
 
 **Var spelet söks.** Spelet körs genom Wine, så det ligger i ett Wine-prefix:
 `<prefix>/drive_c/Program Files (x86)/World of Warcraft/_forever_` (eller `Program Files`). Appen provar dessa prefix:
@@ -57,6 +57,13 @@ som inte går att läsa vid inloggning hade stoppat uppladdningen i tysthet.
   en nyare version finns, med länk till nedladdningssidan. Addonen uppdateras automatiskt som på de andra plattformarna.
 - **I en AppImage** körs binären från en tillfällig montering (`/tmp/.mount_…`). Autostart och omstart pekar därför på
   själva AppImage-filen (`$APPIMAGE`, `SafeFs.LinuxLaunchPath`).
+
+## 1.0.12
+Samma ändringar som macOS-appen (se "1.0.12" i `client/mac/README.md`): "Starta vid inloggning (rekommenderas)" förvald
+på välkomstskärmen och en fråga en gång till befintliga användare som själva startar appen (aldrig med `--tray` eller
+efter `--restarted`), ärlig status och statusrad, "Välj WoW-katalog" som huvudknapp utan spelkatalog (utan
+mappsymbol – alla skrivbord har inte ett färgemoji-typsnitt), ingen dialog vid autostart (rad i lägerjournalen och
+fältikonen med röd prick i stället), addonens fel ligger kvar efter nästa synk, och Enter väljer guldknappen.
 
 ## Bygga
 ```bash

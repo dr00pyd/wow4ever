@@ -49,11 +49,11 @@ internal static class Dialogs
         await Show(w, owner);
     }
 
-    public static async Task<bool> YesNo(Window? owner, string text, string? yes = null, string? no = null)
+    public static async Task<bool> YesNo(Window? owner, string text, string? yes = null, string? no = null, string? title = null)
     {
         bool result = false;
         var body = Body(text, out var buttons);
-        var w = Make(T("app"), body);
+        var w = Make(title ?? T("app"), body);
         var y = Look.GoldButton(yes ?? (Strings.IsSv ? "Ja" : "Yes"));
         var n = Look.QuietButton(no ?? (Strings.IsSv ? "Nej" : "No"));
         y.IsDefault = true;

@@ -24,7 +24,8 @@ internal sealed class ScoutController : IDisposable
     public string StatusText { get; private set; } = "";
     public Color StatusColor { get; private set; } = Look.Muted;
     public bool Uploading => _uploader.IsBusy || _uploadingUi;
-    public string? ErrorText { get; private set; }
+    /// <summary>Fel att visa: uppladdningens, annars addonens (1.0.12, M5: addonens fel raderas inte av nästa synk).</summary>
+    public string? ErrorText => Rules112.ShownError(_uploadError, _addonError);
     public bool HasSavedVariables { get; private set; }
     public IReadOnlyList<(DateTime At, string Text, Color Color)> Journal => _journal;
     public bool IsExiting { get; private set; }
@@ -44,6 +45,9 @@ internal sealed class ScoutController : IDisposable
     private bool _uploadingUi;
     private int _frame, _humor;
     private string _statsStamp = "";
+    private string? _uploadError;
+    /// <summary>1.0.12 (M5): addonen kunde inte installeras eller väntar på en signerad version. Lever tills addonen är på plats.</summary>
+    private string? _addonError;
 
     public ScoutController(IClassicDesktopStyleApplicationLifetime lifetime, Settings settings, ApiClient api)
     {
@@ -116,17 +120,21 @@ internal sealed class ScoutController : IDisposable
 
     private string Humor() => T("humor." + (1 + (_humor++ % 3)));
 
-    private bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
+    public bool AutoUploadActive => Settings.AutoUpload && !Settings.AutoUploadPaused;
 
     public GameDir? CurrentDir => _gameRoot is null ? null : new GameDir(_gameRoot, Path.GetFileName(_gameRoot));
 
     // ------------------------------------------------------------------ start
 
-    public async Task StartAsync(bool showWindow)
+    /// <param name="showWindow">Visa fönstret direkt (första starten, efter en uppdatering användaren bad om; Linux: utan --tray).</param>
+    /// <param name="userStarted">Användaren startade appen själv (inte autostart, inte omstart efter uppdatering). Bara då
+    /// får appen fråga om autostart – aldrig över spelet efter en tyst uppdatering (1.0.12, H1).</param>
+    public async Task StartAsync(bool showWindow, bool userStarted = false)
     {
         if (showWindow) ShowWindow();
         RefreshAutostartPath();
-        await EnsureGameDir();
+        if (userStarted) await AskAutostartOnce();
+        await EnsureGameDir(interactive: showWindow || userStarted);
         ApplyGameDir();
         InstallBundledAddonIfNeeded();
         RefreshStats(force: true);
@@ -141,6 +149,26 @@ internal sealed class ScoutController : IDisposable
     private static void RefreshAutostartPath()
     {
         try { if (SafeFs.AutostartEnabled) SafeFs.SetAutostart(true); }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { }
+    }
+
+    /// <summary>
+    /// 1.0.12 (H1): autostart var av som standard och nämndes bara i Inställningar – den som startade om datorn laddade
+    /// inte upp något, utan besked. Nu frågas det på välkomstskärmen, och befintliga användare får frågan en gång.
+    /// macOS: LaunchAgent (~/Library/LaunchAgents), Linux: XDG-autostart (~/.config/autostart) – båda via SafeFs.
+    /// </summary>
+    private async Task AskAutostartOnce()
+    {
+        bool enabled;
+        try { enabled = SafeFs.AutostartEnabled; }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { enabled = false; }
+        var decision = Rules112.DecideAutostartAsk(userStarted: true, Settings.AutostartAsked, enabled);
+        if (decision == Rules112.AutostartAsk.Nothing) return;
+        Settings.AutostartAsked = true;
+        try { Settings.Save(); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SafeFsException) { }
+        if (decision != Rules112.AutostartAsk.Ask) return;
+        if (!await Dialogs.YesNo(_window, T("autostart.ask"), title: T("autostart.ask.title"))) return;
+        try { SafeFs.SetAutostart(true); }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SafeFsException) { }
     }
 
@@ -159,11 +187,44 @@ internal sealed class ScoutController : IDisposable
         _sync.Watch(CurrentDir?.AccountDir);
     }
 
-    private async Task EnsureGameDir()
+    /// <param name="interactive">Användaren startade appen (eller fönstret visas). Vid autostart och bakgrundssynk öppnas
+    /// ingen dialog: en rad i lägerjournalen, lägerelden med röd prick och "Välj WoW-katalog" i menyn och fönstret säger
+    /// vad som behövs (1.0.12, H5).</param>
+    private async Task<Rules112.GameDirAction> EnsureGameDir(bool interactive)
     {
-        var (step, dir) = WowLocator.NextStep(Settings, WowLocator.IsUsableGameDir, () => WowLocator.Locate());
-        if (step == WowLocator.StartStep.Confirm) await ConfirmFoundGameDir(dir!);
-        else if (step == WowLocator.StartStep.Pick) await OpenSettings(pickDir: true);
+        WowLocator.StartStep step;
+        string? dir;
+        try { (step, dir) = WowLocator.NextStep(Settings, WowLocator.IsUsableGameDir, () => WowLocator.Locate()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SafeFsException) { (step, dir) = (WowLocator.StartStep.Pick, null); }
+        var action = Rules112.DecideGameDir(step, interactive);
+        switch (action)
+        {
+            case Rules112.GameDirAction.Confirm:
+                await ConfirmFoundGameDir(dir!);
+                break;
+            case Rules112.GameDirAction.Pick:
+                await OpenSettings(pickDir: true);
+                break;
+            case Rules112.GameDirAction.Notify:
+                Log(T("gamedir.toast"), Look.Warn);
+                break;
+        }
+        return action;
+    }
+
+    /// <summary>
+    /// "Välj WoW-katalog" (knappen, menyn, F5) utan godkänd katalog: samma väg som vid start, men alltid med dialog –
+    /// en automatiskt hittad katalog bekräftas, annars öppnas väljaren. Sedan används katalogen direkt.
+    /// </summary>
+    public async Task ChooseGameDir()
+    {
+        // Sparad katalog som ändå inte gick att använda (Ready men ingen CurrentDir): öppna väljaren direkt.
+        if (await EnsureGameDir(interactive: true) == Rules112.GameDirAction.None) await OpenSettings(pickDir: true);
+        ApplyGameDir(); // efter en bekräftelse (Inställningar har redan gjort det om katalogen valdes där – ofarligt igen)
+        InstallBundledAddonIfNeeded();
+        RefreshStats(force: true);
+        UpdateStatus();
+        if (CurrentDir != null) _sync.Notify();
     }
 
     /// <summary>
@@ -191,15 +252,22 @@ internal sealed class ScoutController : IDisposable
         try
         {
             var bundled = AddonBundle.Version;
-            if (Settings.BlockedAddons.Contains(bundled ?? "")) return;
-            if (AddonInstaller.NeedsInstall(dir, AddonBundle.Files))
+            if (!Settings.BlockedAddons.Contains(bundled ?? "") && AddonInstaller.NeedsInstall(dir, AddonBundle.Files))
             {
                 AddonInstaller.Install(dir, AddonBundle.Files);
                 Log(TF("journal.addon", bundled), Look.Ok);
                 _window?.Flash(TF("addon.installed", bundled), 8000);
             }
         }
-        catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetError(Strings.Error(ex)); }
+        catch (Exception ex) when (ex is ScoutException or IOException or UnauthorizedAccessException) { SetAddonError(Strings.Error(ex)); return; }
+        // M5: addonens fel lever tills en (inte spärrad) addon är på plats.
+        if (_addonError != null && Rules112.AddonErrorResolved(AddonInstaller.InstalledVersion(dir), Settings.BlockedAddons)) SetAddonError(null);
+    }
+
+    private void SetAddonError(string? text)
+    {
+        _addonError = text;
+        UpdateStatus();
     }
 
     // ------------------------------------------------------------------ data
@@ -273,22 +341,22 @@ internal sealed class ScoutController : IDisposable
 
     private void SetError(string text)
     {
-        ErrorText = text;
+        _uploadError = text;
         UpdateStatus();
     }
 
     public void UpdateStatus()
     {
         if (Uploading) { State = TrayState.Uploading; StatusText = T("uploading"); StatusColor = Look.Gold; }
-        else if (ErrorText != null) { State = TrayState.Error; StatusText = ErrorText; StatusColor = Look.Err; }
+        else if (ErrorText is { } errText) { State = TrayState.Error; StatusText = errText; StatusColor = Look.Err; }
         else if (Settings.NextRetryUtc is { } next) { State = TrayState.Error; StatusText = TF("retry", Strings.When(next)); StatusColor = Look.Warn; }
         else
         {
             State = TrayState.Normal;
-            StatusText = CurrentDir is null ? T("game.none")
-                : Settings.AutoUploadPaused ? T("paused")
-                : Settings.LastUploadUtc is { } t ? TF("last", Strings.When(t)) : T("never");
-            StatusColor = CurrentDir is null || Settings.AutoUploadPaused ? Look.Warn : Look.Muted;
+            // 1.0.12 (H4): status även när automatisk uppladdning är av (inte bara pausad).
+            var key = Rules112.IdleStatusKey(CurrentDir != null, Settings.AutoUploadPaused, Settings.AutoUpload, Settings.LastUploadUtc != null);
+            StatusText = key == "last" ? TF("last", Strings.When(Settings.LastUploadUtc!.Value)) : T(key);
+            StatusColor = CurrentDir is null || !AutoUploadActive ? Look.Warn : Look.Muted;
         }
 
         if (State == TrayState.Uploading)
@@ -299,7 +367,9 @@ internal sealed class ScoutController : IDisposable
         else
         {
             _anim.Stop();
-            bool normal = State == TrayState.Normal;
+            // 1.0.12 (H5): utan spelkatalog lägerelden med röd prick – på Windows en bubbla vid klockan. Det här är det
+            // som syns vid autostart, när ingen dialog öppnas.
+            bool normal = State == TrayState.Normal && CurrentDir != null;
             MacOSProperties.SetIsTemplateIcon(_tray, normal);
             _tray.Icon = normal ? _iconNormal : _iconError;
         }
@@ -312,7 +382,10 @@ internal sealed class ScoutController : IDisposable
 
     private void UpdateMenu()
     {
-        _miUpload.IsEnabled = !Uploading && CurrentDir != null && !string.IsNullOrEmpty(Api.Key);
+        // 1.0.12 (H5): utan spelkatalog är menyvalet vägen framåt ("Välj WoW-katalog …") i stället för en grå rad.
+        bool noDir = CurrentDir is null;
+        _miUpload.Header = noDir ? T("pick.dir") + " …" : T("menu.upload");
+        _miUpload.IsEnabled = !Uploading && (noDir || !string.IsNullOrEmpty(Api.Key));
         _miStatus.Header = StatusText.Length > 80 ? StatusText[..79] + "…" : StatusText;
         _miPause.IsChecked = Settings.AutoUploadPaused;
     }
@@ -330,7 +403,8 @@ internal sealed class ScoutController : IDisposable
 
     public async Task UploadNow(bool quietIfNothing = false)
     {
-        if (CurrentDir is not { } dir) { await OpenSettings(pickDir: true); return; }
+        // 1.0.12 (H5): bakgrundssynken (quietIfNothing) öppnar aldrig en dialog. Bara knappen, menyn och F5 gör det.
+        if (CurrentDir is not { } dir) { if (!quietIfNothing) await ChooseGameDir(); return; }
         if (string.IsNullOrEmpty(Api.Key)) return;
         _uploadingUi = true;
         UpdateStatus();
@@ -338,7 +412,8 @@ internal sealed class ScoutController : IDisposable
         try { report = await Task.Run(() => _uploader.SyncAsync(dir, force: false)); }
         finally { _uploadingUi = false; }
 
-        ErrorText = report.Error is { } err && !report.WillRetry ? Strings.Error(err) : null;
+        // M5: bara uppladdningens fel ersätts – addonens fel (_addonError) ligger kvar.
+        _uploadError = report.Error is { } err && !report.WillRetry ? Strings.Error(err) : null;
         var now = Strings.When(DateTime.UtcNow);
         if (report.Error is { } e2) Log(TF("journal.error", now, Strings.Error(e2)), report.WillRetry ? Look.Warn : Look.Err);
         if (report.FilesUploaded > 0) Log(TF("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Look.Ok);
@@ -516,14 +591,15 @@ internal sealed class ScoutController : IDisposable
                 return;
             case AddonInstaller.UpdateAction.BlockedWaiting:
                 var wait = TF("addon.blocked.wait", installed);
-                if (ErrorText != wait) Log(TF("journal.error", Strings.When(DateTime.UtcNow), wait), Look.Warn);
-                SetError(wait);
+                if (_addonError != wait) Log(TF("journal.error", Strings.When(DateTime.UtcNow), wait), Look.Warn);
+                SetAddonError(wait);
                 if (interactive) await Dialogs.Info(_window, wait);
                 return;
         }
         var zip = await Api.DownloadReleaseFileAsync(release, ReleaseKind.Addon, UpdateKeys.PublicKeyPem, 20 * 1024 * 1024);
         AddonInstaller.Install(dir, AddonInstaller.FromZip(zip));
-        ErrorText = null;
+        _uploadError = null;
+        _addonError = null;
         var msg = announceBlocked ? TF("addon.blocked", release.Addon) : TF("update.addon", release.Addon);
         if (interactive) await Dialogs.Info(_window, msg);
         else Log(msg, Look.Ok);

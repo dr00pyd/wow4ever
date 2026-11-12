@@ -47,7 +47,7 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
 | `<spelkatalog>/Cache/ADB/*/DBCache.bin` | läsa |
 | `Interface`, `WTF/Account/*`, `…/SavedVariables`, `Cache/ADB/*` | bara existens och listning |
 | `~/Library/Application Support/ForeverScout/**` (katalogen 0700) | `settings.json`, `uploads.log`, `instance.lock`, `instance.sock` |
-| `~/Library/LaunchAgents/se.wow4ever.foreverscout.plist` | bara när du kryssar i "Starta vid inloggning" (av som standard) |
+| `~/Library/LaunchAgents/se.wow4ever.foreverscout.plist` | när "Starta vid inloggning" är på – från 1.0.12 förvalt på välkomstskärmen (går att kryssa ur), annars av tills du kryssar i den i Inställningar |
 | det egna `Forever Scout.app` (som helhet) och `.ForeverScout-update/` bredvid det | bara under självuppdateringen |
 
 - Spelkatalogen hittas i `/Applications/World of Warcraft/_forever_` eller `~/Applications/World of Warcraft/_forever_`
@@ -100,6 +100,29 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
   (t.ex. "Starta vid inloggning (i menyraden)", "Göm i menyraden", sökvägar med `/Applications`), som Mac-appen tar först.
 - **Aviseringar:** macOS-notiser används inte (de kräver ett separat Objective-C-gränssnitt). Det som på Windows blir en
   ballong syns i stället i lägerjournalen och statusraden.
+
+### 1.0.12 (samma som Windows 1.0.12, granskningen `docs/review/CLIENT-WINDOWS-2026-11-11.md`)
+Reglerna ligger som rena funktioner i `Rules112` (`Support.cs`) och testas i `tests/Release112MacTests.cs`; Core-delen
+(M1–M4) testas av den länkade `client/windows/tests/Release112Tests.cs`. Gäller också Linux (samma källfiler).
+- **H1 – autostart:** välkomstskärmen har "Starta vid inloggning (rekommenderas)", förvald (LaunchAgent; på Linux
+  XDG-autostart). Befintliga användare får frågan en gång (`Settings.AutostartAsked`), och bara när de själva startat
+  appen – aldrig vid inloggning (`--tray`) eller efter en uppdatering/omstart (`--restarted`). Är autostart redan på
+  räknas frågan som ställd.
+- **H4 – ärlig status:** "Allt fungerar" bara med spelkatalog, addon på plats, addonen har sparat, automatisk
+  uppladdning på och inga fel/omförsök. Status "Automatisk uppladdning är av" när den är avstängd (inte bara pausad), och
+  "Nästa synk" säger "tryck Ladda upp" då. Addon-pillret säger "Addon x installerad".
+- **H5 – utan spelkatalog:** huvudknappen heter "📁 Välj WoW-katalog" (på Linux utan symbol), tabellraderna säger
+  "Välj WoW-katalog", statusraden "Välj WoW-katalog för att börja" och menyradens "Ladda upp nu" blir
+  "Välj WoW-katalog …" (förr grå). Dialogen (väljaren eller bekräftelsen av en hittad katalog) öppnas bara när du själv
+  startat appen eller fönstret visas; vid inloggning och i bakgrundssynken blir det en rad i lägerjournalen och lägerelden
+  med röd prick. Skillnad mot Windows: där visas bekräftelsefrågan för en hittad katalog även vid autostart.
+- **M5:** addonens fel (installationen misslyckades, spärrad version väntar) ligger kvar tills addonen är på plats –
+  nästa synk raderar bara uppladdningens eget fel.
+- **Enter** på välkomstskärmen väljer guldknappen (logga in med webbläsaren); i namnrutan registrerar Enter namnet och
+  i kodrutan kopplar den med koden.
+- Texterna är Core-nycklarna från 1.0.12 (`auto.off`, `pick.dir`, `st.nodir`, `footer.next.*`). Där Core-texten nämner
+  Windows (`onb.autostart`, `autostart.ask`, `autostart.ask.title`, `gamedir.toast`) har appen egna `mac.`/`linux.`-texter
+  i `Texts.Local` (`Support.cs`), så att Core och Windows-klienten inte ändras.
 
 ## Uppdateringar
 `public/scout/version.json` får fyra nya fält och en tredje signatur. Windows påverkas inte:

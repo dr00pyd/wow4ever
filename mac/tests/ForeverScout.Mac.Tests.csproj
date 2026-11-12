@@ -44,6 +44,8 @@
     <Compile Include="..\..\windows\tests\Release107Tests.cs" Link="Shared\Release107Tests.cs" />
     <!-- 1.0.9: logga in med webbläsaren (kontraktet 2b) – DeviceLink mot låtsasserver och låtsasklocka. -->
     <Compile Include="..\..\windows\tests\DeviceLinkTests.cs" Link="Shared\DeviceLinkTests.cs" />
+    <!-- 1.0.12: M1–M4 i Core (uppladdningskön, en dålig fil, tolken, hängd nedladdning) – körs även för macOS/Linux. -->
+    <Compile Include="..\..\windows\tests\Release112Tests.cs" Link="Shared\Release112Tests.cs" />
   </ItemGroup>
 
 </Project>

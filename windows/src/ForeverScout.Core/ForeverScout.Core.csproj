@@ -12,6 +12,7 @@
     <Version>1.0.12</Version>
     <DebugType>embedded</DebugType>
     <DefineConstants Condition="'$(ScoutVariant)' == 'lite'">$(DefineConstants);SCOUT_LITE</DefineConstants>
+    <DefineConstants Condition="'$(ScoutVariant)' == 'store'">$(DefineConstants);SCOUT_STORE</DefineConstants>
   </PropertyGroup>
 
   <!--

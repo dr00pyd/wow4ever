@@ -22,8 +22,15 @@ internal sealed class OnboardingWindow : Window
     private readonly Button _link = Look.QuietButton(T("first.link"));
     private readonly Button _useCode = Look.QuietButton(T("onb.usecode"));
     private readonly TextBlock _status = Look.Label("", 13, Look.Muted);
+    /// <summary>
+    /// 1.0.12 (H1): "Starta vid inloggning (rekommenderas)" – förvald och synlig. Utan den skickades inget efter en
+    /// omstart av datorn. macOS: LaunchAgent, Linux: XDG-autostart (App sätter den via SafeFs.SetAutostart).
+    /// </summary>
+    private readonly CheckBox _autostart = new() { Content = T("onb.autostart"), IsChecked = true, Foreground = Look.B(Look.Text), FontSize = 13 };
 
     public Contributor? Result { get; private set; }
+
+    public bool StartAtLogin => _autostart.IsChecked == true;
 
     public OnboardingWindow(ApiClient api)
     {
@@ -83,6 +90,8 @@ internal sealed class OnboardingWindow : Window
         var privacy = new StackPanel { Spacing = 6 };
         privacy.Children.Add(Look.Label(T("onb.privacy.title"), 15, Look.Text, FontWeight.Bold));
         privacy.Children.Add(Look.Label(T("onb.privacy.text"), 13, Look.Muted));
+        privacy.Children.Add(new Border { Height = 1, Background = Look.B(Look.Line), Margin = new Thickness(0, 6, 0, 2) });
+        privacy.Children.Add(_autostart);
         right.Children.Add(Look.Panel(privacy));
         var tavern = new StackPanel { Spacing = 4 };
         tavern.Children.Add(Look.Label(T("onb.tavern.who"), 12, Look.Gold, FontWeight.Bold));
@@ -109,7 +118,13 @@ internal sealed class OnboardingWindow : Window
         root.Children.Add(new ScrollViewer { Content = cols });
         Content = root;
 
-        _register.IsDefault = true;
+        // 1.0.12: Enter väljer huvudvägen (guldknappen, logga in med webbläsaren). I namnrutan registrerar Enter namnet och
+        // i kodrutan kopplar den med koden – som på Windows (AcceptButton följer rutan).
+        UseDefault(_browser);
+        _name.GotFocus += (_, _) => UseDefault(_register);
+        _code.GotFocus += (_, _) => UseDefault(_link);
+        _name.LostFocus += (_, _) => UseDefault(_browser);
+        _code.LostFocus += (_, _) => UseDefault(_browser);
         _browser.Click += async (_, _) =>
         {
             // Nyckeln sparas av App (samma väg som namn och kod), därför ingen store här.
@@ -130,7 +145,15 @@ internal sealed class OnboardingWindow : Window
             return await _api.LinkAsync(c);
         });
         _useCode.Click += (_, _) => { _code.Focus(); _useCode.IsVisible = false; };
-        Opened += (_, _) => _name.Focus();
+        Opened += (_, _) => _browser.Focus();
+    }
+
+    /// <summary>Exakt en standardknapp (Enter) åt gången.</summary>
+    private void UseDefault(Button b)
+    {
+        _browser.IsDefault = b == _browser;
+        _register.IsDefault = b == _register;
+        _link.IsDefault = b == _link;
     }
 
     private async Task Run(Func<Task<Contributor>> action)

@@ -156,9 +156,9 @@ internal sealed class ScoutApp : ApplicationContext
         try { Settings.Save(); } catch { }
         try
         {
-            if (SafeFs.AutostartEnabled) return;
+            if (Autostart.IsEnabled) return;
             var answer = Message(S("autostart.ask"), S("autostart.ask.title"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (answer == DialogResult.Yes) SafeFs.SetAutostart(true);
+            if (answer == DialogResult.Yes) Autostart.Set(true);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
     }
@@ -166,6 +166,7 @@ internal sealed class ScoutApp : ApplicationContext
     /// <summary>"Starta med Windows" på: peka Run-värdet på den exe som körs nu (alltid den senaste filen).</summary>
     private static void RefreshAutostartPath()
     {
+        if (BuildInfo.IsStore) return; // startup task pekar alltid på paketets exe
         try { if (SafeFs.AutostartEnabled) SafeFs.SetAutostart(true); }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException or SafeFsException) { }
     }
@@ -472,6 +473,13 @@ internal sealed class ScoutApp : ApplicationContext
             // Efter en versionskontroll: försök igen med filer som servern tidigare avvisade (servern kan ha rättats).
             // Oförändrade, redan uppladdade filer skickas inte (sha256), så detta kostar inget annars.
             _sync.Notify();
+
+            // Microsoft Store uppdaterar appen själv (Store-regel; paketkatalogen är skrivskyddad) – bara addonen ovan.
+            if (BuildInfo.IsStore)
+            {
+                if (interactive) Message(F("update.none", SelfUpdater.CurrentVersion.ToString(3)), S("app"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
 
             // Varje variant uppdaterar sig från sin egen fil: full → clientFile, lite → liteFile.
             var kind = BuildInfo.UpdateKind;

@@ -1,9 +1,11 @@
 <Project>
   <!--
-    Variant av klienten (samma kod): -p:ScoutVariant=full (standard) eller -p:ScoutVariant=lite.
+    Variant av klienten (samma kod): -p:ScoutVariant=full (standard), -p:ScoutVariant=lite eller -p:ScoutVariant=store.
       full = fristående (self-contained) single-file exe, inget att installera (~105 MB).
       lite = ramverksberoende single-file exe (~2 MB), kräver .NET 10 Desktop Runtime.
-    Båda: win-x64, ingen komprimering/packning, ingen trimning. Konstanten SCOUT_LITE styr BuildInfo.Variant.
+      store = som full, men för Microsoft Store (MSIX, tools/make-msix.mjs): ingen egen exe-uppdatering (Store sköter den),
+              autostart via MSIX startup task. Konstanten SCOUT_STORE.
+    Alla: win-x64, ingen komprimering/packning, ingen trimning. Konstanterna SCOUT_LITE/SCOUT_STORE styr BuildInfo.Variant.
   -->
   <PropertyGroup>
     <ScoutVariant Condition="'$(ScoutVariant)' == ''">full</ScoutVariant>

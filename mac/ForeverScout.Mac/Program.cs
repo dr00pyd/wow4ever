@@ -48,7 +48,7 @@ internal static class Program
         IoRetry.OnRetry = (step, attempt, ex) => UploadLog.Append("update", 0, "-", $"retry step={step} attempt={attempt} {ex.GetType().Name} 0x{ex.HResult:X8}");
         if (instance != null) MacBundleUpdater.CleanupOld();
         using var api = new ApiClient { Key = message is null ? KeychainStore.Load() : null };
-        App.Startup = new StartupState(settings, api, instance, restarted, message);
+        App.Startup = new StartupState(settings, api, instance, restarted, message, Rules112.UserStarted(args));
 
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
