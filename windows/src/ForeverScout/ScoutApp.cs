@@ -415,6 +415,7 @@ internal sealed class ScoutApp : ApplicationContext
         if (report.Error is { } e2) Log(F("journal.error", now, Error(e2)), report.WillRetry ? Theme.Warn : Theme.Err);
         if (report.FilesUploaded > 0) Log(F("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Theme.Ok);
         if (report.HotfixStored > 0) Log(F("journal.hotfix", now), Theme.Ok);
+        if (report.CreatureCacheStored > 0) Log(F("journal.creaturecache", now, report.CreatureCount), Theme.Ok);
         if (report.AuctionRows > 0) Log(F("journal.auctions", now, report.AuctionRows), Theme.Ok);
         if (report.NothingToDo && !quietIfNothing) Log(F("journal.nothing", now), Theme.Muted);
         if (report.FilesUploaded > 0 || report.HotfixStored > 0)
@@ -466,7 +467,7 @@ internal sealed class ScoutApp : ApplicationContext
         try
         {
             // L10: signature2 krävs (ReleaseVerifier) och "issued" får inte vara äldre än den senaste vi sett.
-            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta);
             Settings.BlockedAddons = release.BlockedAddons.ToList();
             Settings.Save();
             await UpdateAddon(release, interactive, announceBlocked: false, alsoBlocked: null);
@@ -568,7 +569,7 @@ internal sealed class ScoutApp : ApplicationContext
         {
             // Spärrar som uppladdningen just lärt sig (422) gäller tills nästa versionskontroll, även om versionsinfon inte nämner dem.
             var learned = Settings.BlockedAddons.ToList();
-            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta);
             Settings.BlockedAddons = release.BlockedAddons.Union(learned).ToList();
             Settings.Save();
             await UpdateAddon(release, interactive: false, announceBlocked: true, alsoBlocked: learned);
@@ -659,6 +660,7 @@ internal sealed class ScoutApp : ApplicationContext
     {
         var oldLang = Settings.Language;
         var oldAuction = Settings.ShareAuctionPrices;
+        var oldBeta = Settings.Beta;
         using var f = new SettingsForm(Settings, pickDir, LinkWithBrowser);
         if (Dialog(f) != DialogResult.OK || _exiting) return;
         if (f.Unlinked || oldLang != Settings.Language) { Restart(); return; }
@@ -667,6 +669,7 @@ internal sealed class ScoutApp : ApplicationContext
         InstallBundledAddonIfNeeded();
         RefreshStats(force: true);
         UpdateStatus();
+        if (Settings.Beta != oldBeta) _ = CheckUpdates(interactive: false); // 1.0.13: bytt kanal – hämta direkt
     }
 
     /// <summary>

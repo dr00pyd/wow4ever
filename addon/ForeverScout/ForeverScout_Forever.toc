@@ -1,9 +1,10 @@
 ## Interface: 16001
 ## Title: ForeverScout
-## Notes: Collects NPC, mob, trainer, vendor, quest, object, mailbox, loot and flight data for guide.wow4ever.se. No character names, no realm.
-## Notes-svSE: Samlar NPC-, mob-, tränar-, försäljar-, quest-, objekt-, brevlåde-, loot- och flygdata till guide.wow4ever.se. Inga karaktärsnamn, ingen realm.
+## Notes: Collects NPC, mob, trainer, vendor, quest, object, mailbox, loot and flight data, plus your own completed quests and known recipes, for guide.wow4ever.se. No character names, no realm.
+## Notes-svSE: Samlar NPC-, mob-, tränar-, försäljar-, quest-, objekt-, brevlåde-, loot- och flygdata samt dina klarade quests och kända recept till guide.wow4ever.se. Inga karaktärsnamn, ingen realm.
 ## Author: WoW Forever LAN guild
-## Version: 1.0.10
+## Version: 1.0.18
+## IconTexture: Interface\AddOns\ForeverScout\ForeverScout
 ## SavedVariables: ForeverScoutDB
 ## SavedVariablesPerCharacter: ForeverScoutOpt
 ## X-Website: https://guide.wow4ever.se/bidra

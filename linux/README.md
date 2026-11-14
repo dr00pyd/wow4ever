@@ -27,6 +27,7 @@ All fil- och processåtkomst går genom `SafeFs.cs` (samma statiska vakt, `Stati
 | `<spelkatalog>/WTF/Account/*/SavedVariables/ForeverScout.lua` | läsa |
 | `…/SavedVariables/Auctionator.lua`, `…/Auc-Stat-Simple.lua` | läsa, **bara** när "Dela auktionspriser" är på (av som standard) |
 | `<spelkatalog>/Cache/ADB/*/DBCache.bin` | läsa |
+| `<spelkatalog>/Cache/WDB/*/creaturecache.wdb` | läsa (varelsecachen, 1.0.14 – kan stängas av i Inställningar) |
 | `Interface`, `WTF/Account/*`, `…/SavedVariables`, `Cache/ADB/*` | bara existens och listning |
 | `~/.config/ForeverScout/**` (katalogen 0700; `$XDG_CONFIG_HOME` följs) | `settings.json`, `uploads.log`, `instance.lock`, `instance.sock`, `contributor-key` (0600) |
 | `~/.config/autostart/se.wow4ever.foreverscout.desktop` | när "Starta vid inloggning" är på – från 1.0.12 förvalt på välkomstskärmen (går att kryssa ur), annars av tills du kryssar i den i Inställningar |

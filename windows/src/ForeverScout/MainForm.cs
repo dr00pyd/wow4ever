@@ -404,7 +404,7 @@ internal sealed class MainForm : Form
         else
         {
             _mineDetail.Controls.Add(new Label { Text = S("confirmed"), AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Ui(9.75f), BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 2) });
-            foreach (var item in st.LastConfirmed.Take(3))
+            foreach (var item in ConfirmedItem.ForDisplay(st.LastConfirmed))
             {
                 var url = item.Url;
                 Control c = string.IsNullOrEmpty(url)

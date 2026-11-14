@@ -16,6 +16,8 @@ public static class ErrorCodes
     public const string BadResponse = "bad-response";
     public const string UploadTooLarge = "upload-too-large";
     public const string HotfixTooLarge = "hotfix-too-large";
+    /// <summary>1.0.14: creaturecache.wdb större än <see cref="ApiClient.MaxCreatureCacheBytes"/>.</summary>
+    public const string CreatureCacheTooLarge = "creaturecache-too-large";
     public const string DownloadTooLarge = "download-too-large";
     public const string OtherHost = "other-host";
     public const string BadFileName = "bad-file-name";

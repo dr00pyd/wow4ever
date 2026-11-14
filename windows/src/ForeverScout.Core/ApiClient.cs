@@ -25,6 +25,15 @@ public sealed class HotfixResult
     [JsonPropertyName("sha256")] public string? Sha256 { get; set; }
 }
 
+/// <summary>1.0.14: svar från POST /api/bidrag/varelser.</summary>
+public sealed class CreatureCacheResult
+{
+    /// <summary>False när servern redan har filen (eller dygnstaket nåtts) – filen räknas ändå som hanterad.</summary>
+    [JsonPropertyName("stored")] public bool Stored { get; set; }
+    /// <summary>Varelser med modell i filen.</summary>
+    [JsonPropertyName("creatures")] public int Creatures { get; set; }
+}
+
 /// <summary>Svar från POST /api/bidrag/auktioner.</summary>
 public sealed class AuctionResult
 {
@@ -110,6 +119,8 @@ public sealed class ApiClient : IDisposable
     public const string DefaultBaseUrl = "https://guide.wow4ever.se";
     public const long MaxUploadBytes = 5 * 1024 * 1024;
     public const long MaxHotfixBytes = 30 * 1024 * 1024;
+    /// <summary>1.0.14: creaturecache.wdb (servern tar emot högst lika mycket, lib/scout/wdb.ts WDB_MAX_BYTES).</summary>
+    public const long MaxCreatureCacheBytes = 8 * 1024 * 1024;
 
     private readonly HttpClient _http;
     public Uri BaseUri { get; }
@@ -285,6 +296,21 @@ public sealed class ApiClient : IDisposable
     }
 
     /// <summary>
+    /// 1.0.14: spelets varelsecache (creaturecache.wdb) som den är, gzip-komprimerad. Innehåller bara NPC:ers namn,
+    /// titel, typ och modell; servern sparar varelse → modell och namnet, inte filen.
+    /// </summary>
+    public async Task<CreatureCacheResult> UploadCreatureCacheAsync(byte[] wdb, CancellationToken ct = default)
+    {
+        if (wdb.LongLength > MaxCreatureCacheBytes) throw new ApiException(ErrorCodes.CreatureCacheTooLarge);
+        var r = Req(HttpMethod.Post, "/api/bidrag/varelser", true);
+        var content = new ByteArrayContent(Gzip(wdb));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Headers.ContentEncoding.Add("gzip");
+        r.Content = content;
+        return await Send<CreatureCacheResult>(r, ct);
+    }
+
+    /// <summary>
     /// Auktionspriser (<see cref="AuctionData.Payload"/>): JSON med bara föremål, realm/fraktion, dag, lägsta pris och
     /// antal – aldrig själva filen. Gzip-komprimerat.
     /// </summary>
@@ -302,9 +328,12 @@ public sealed class ApiClient : IDisposable
     public Task<MeResult> MeAsync(CancellationToken ct = default) => Send<MeResult>(Req(HttpMethod.Get, "/api/bidrag/jag", true), ct);
 
     /// <summary>Hämtar versionsinfo och verifierar dess signatur. Saknad eller felaktig signatur = fel, ingen reserv.</summary>
-    public async Task<SignedRelease> VersionAsync(string publicKeyPem, CancellationToken ct = default)
+    /// <summary>1.0.13: beta-kanalen (Settings.Beta) har en egen signerad versionsinfo; saknas den svarar servern med den vanliga.</summary>
+    public static string VersionPath(bool beta) => beta ? "/api/bidrag/version?kanal=beta" : "/api/bidrag/version";
+
+    public async Task<SignedRelease> VersionAsync(string publicKeyPem, bool beta = false, CancellationToken ct = default)
     {
-        var json = await GetStringAsync("/api/bidrag/version", 256 * 1024, ct);
+        var json = await GetStringAsync(VersionPath(beta), 256 * 1024, ct);
         return ReleaseVerifier.Verify(json, publicKeyPem);
     }
 
@@ -312,9 +341,9 @@ public sealed class ApiClient : IDisposable
     /// macOS: samma versionsinfo, men verifierad med signature3 (<see cref="ReleaseVerifier.VerifyMac"/>) så att
     /// mac-fälten (macFile, macSha256, macSig) är signerade. Saknas signature3 blir det ett fel, ingen reserv.
     /// </summary>
-    public async Task<SignedRelease> MacVersionAsync(string publicKeyPem, CancellationToken ct = default)
+    public async Task<SignedRelease> MacVersionAsync(string publicKeyPem, bool beta = false, CancellationToken ct = default)
     {
-        var json = await GetStringAsync("/api/bidrag/version", 256 * 1024, ct);
+        var json = await GetStringAsync(VersionPath(beta), 256 * 1024, ct);
         return ReleaseVerifier.VerifyMac(json, publicKeyPem);
     }
 
@@ -322,9 +351,9 @@ public sealed class ApiClient : IDisposable
     /// Linux: samma versionsinfo, verifierad med signature5 (<see cref="ReleaseVerifier.VerifyLinux"/>) så att
     /// linux-fälten är signerade. Saknas signature5 blir det ett fel, ingen reserv.
     /// </summary>
-    public async Task<SignedRelease> LinuxVersionAsync(string publicKeyPem, CancellationToken ct = default)
+    public async Task<SignedRelease> LinuxVersionAsync(string publicKeyPem, bool beta = false, CancellationToken ct = default)
     {
-        var json = await GetStringAsync("/api/bidrag/version", 256 * 1024, ct);
+        var json = await GetStringAsync(VersionPath(beta), 256 * 1024, ct);
         return ReleaseVerifier.VerifyLinux(json, publicKeyPem);
     }
 

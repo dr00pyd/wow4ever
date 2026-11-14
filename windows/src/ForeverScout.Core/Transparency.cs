@@ -95,6 +95,29 @@ public static class UploadPreview
                 catch (Exception ex) when (ex is IOException or SafeFsException or ScoutException) { Line(Strings.Error(ex)); }
             }
 
+        // 1.0.14: spelets varelsecache
+        Line(new string('=', 78));
+        if (!settings.UploadCreatureCache)
+            Line(sv ? "Varelsecache: skickas inte (Inställningar → \"Skicka varelsecachen\" är av). creaturecache.wdb läses inte."
+                    : "Creature cache: not sent (Settings → \"Send the creature cache\" is off). creaturecache.wdb is not read.");
+        else
+        {
+            var found = WowLocator.CreatureCacheFiles(dir);
+            if (found.Count == 0) Line(sv ? "Varelsecache: ingen creaturecache.wdb hittades (Cache\\WDB)." : "Creature cache: no creaturecache.wdb found (Cache\\WDB).");
+            foreach (var f in found)
+            {
+                try
+                {
+                    var bytes = SafeFs.ReadAllBytes(f);
+                    var sha = ApiClient.Sha256Hex(bytes);
+                    bool same = settings.CreatureCacheSha.TryGetValue(Privacy.FileKey(f), out var prev) && prev == sha;
+                    Line(sv ? $"Varelsecache (binär, spelets egen fil – bara NPC:ers namn, titel, typ och modell, inga personuppgifter): POST {api.BaseUri.Host}/api/bidrag/varelser – {bytes.Length:N0} byte (före gzip), sha256 {sha} – {(same ? "redan skickad" : "skickas")}"
+                            : $"Creature cache (binary, the game's own file – only NPC names, titles, types and models, no personal data): POST {api.BaseUri.Host}/api/bidrag/varelser – {bytes.Length:N0} bytes (before gzip), sha256 {sha} – {(same ? "already sent" : "will be sent")}");
+                }
+                catch (Exception ex) when (ex is IOException or SafeFsException or ScoutException) { Line(Strings.Error(ex)); }
+            }
+        }
+
         Line(new string('=', 78));
         if (!settings.ShareAuctionPrices)
             Line(sv ? "Auktionspriser: delas inte (Inställningar → \"Dela auktionspriser\" är av). Auctionator.lua och Auc-Stat-Simple.lua läses inte."

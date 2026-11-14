@@ -24,8 +24,9 @@ public sealed class SafeFsException(string reason, string path) : ScoutException
 ///   <c>WTF\Account\*\SavedVariables\Auctionator.lua</c> och <c>Auc-Stat-Simple.lua</c> (läsa – bara när "Dela
 ///   auktionspriser" är på, <see cref="AuctionFilesAllowed"/>),
 ///   <c>Cache\ADB\*\DBCache.bin</c> (läsa),
+///   <c>Cache\WDB\*\creaturecache.wdb</c> (läsa, 1.0.14 – spelets varelsecache; inga andra filer i Cache\WDB),
 ///   samt kataloglistning av just de mellanliggande katalogerna (Interface, Interface\AddOns, WTF\Account,
-///   WTF\Account\*\SavedVariables, Cache\ADB) för att hitta filerna.</item>
+///   WTF\Account\*\SavedVariables, Cache\ADB, Cache\WDB) för att hitta filerna.</item>
 /// <item>Sökning efter spelkatalogen (bara existens/kataloglistning, inget innehåll): registrerade sökrötter
 ///   (registrets InstallPath, standardsökvägar, användarens val), deras direkta underkataloger,
 ///   <c>&lt;under&gt;\Interface</c>, <c>&lt;under&gt;\WTF</c> och <c>&lt;rot&gt;\.build.info</c>.</item>
@@ -317,10 +318,21 @@ public static class SafeFs
         if (Eq(r[0], "Cache"))
         {
             if (n == 1) return Access.Probe;
-            if (!Eq(r[1], "ADB")) return null;
-            if (n == 2) return Access.Probe;
-            if (n == 3) return isDir ? Access.Probe : null;
-            if (n == 4 && Eq(r[3], "DBCache.bin")) return Access.Read;
+            if (Eq(r[1], "ADB"))
+            {
+                if (n == 2) return Access.Probe;
+                if (n == 3) return isDir ? Access.Probe : null;
+                if (n == 4 && Eq(r[3], "DBCache.bin")) return Access.Read;
+                return null;
+            }
+            if (Eq(r[1], "WDB"))
+            {
+                // 1.0.14: bara varelsecachen – Cache\WDB\<locale>\creaturecache.wdb
+                if (n == 2) return Access.Probe;
+                if (n == 3) return isDir ? Access.Probe : null;
+                if (n == 4 && Eq(r[3], WowLocator.CreatureCacheName)) return Access.Read;
+                return null;
+            }
             return null;
         }
         return null;

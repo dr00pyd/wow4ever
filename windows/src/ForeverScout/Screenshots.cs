@@ -41,6 +41,15 @@ internal static class Screenshots
         await Task.Delay(800);
         MainForm.SaveImage(main, P("dashboard"));
 
+        // 1.0.13: Inställningar (med "Betaversioner")
+        using (var sf = new SettingsForm(app.Settings) { StartPosition = FormStartPosition.CenterScreen })
+        {
+            sf.Show();
+            await Task.Delay(600);
+            MainForm.SaveImage(sf, P("settings"));
+            sf.Hide();
+        }
+
         app.SimulateUploading(true);
         await Task.Delay(400);
         MainForm.SaveImage(main, P("uploading"));

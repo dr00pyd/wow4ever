@@ -13,6 +13,10 @@ public sealed class SyncReport
     /// <summary>Filer som servern avvisade (4xx, t.ex. bad-file). Räknas inte som uppladdade – skickas igen senare.</summary>
     public int FilesRejected { get; set; }
     public int HotfixStored { get; set; }
+    /// <summary>1.0.14: varelsecacher (creaturecache.wdb) som servern tog emot i den här körningen.</summary>
+    public int CreatureCacheStored { get; set; }
+    /// <summary>1.0.14: varelser med modell i de mottagna varelsecacherna (serverns svar).</summary>
+    public int CreatureCount { get; set; }
     /// <summary>Auktionspriser (rader) som servern sparade i den här körningen.</summary>
     public int AuctionRows { get; set; }
     public List<ConfirmedItem> NewConfirmed { get; } = new();
@@ -22,7 +26,7 @@ public sealed class SyncReport
     public bool WillRetry { get; set; }
     /// <summary>Servern (422) eller spärrlistan säger att addonen måste uppdateras.</summary>
     public bool AddonBlocked { get; set; }
-    public bool NothingToDo => FilesUploaded == 0 && HotfixStored == 0 && AuctionRows == 0 && Error is null && !AddonBlocked;
+    public bool NothingToDo => FilesUploaded == 0 && HotfixStored == 0 && CreatureCacheStored == 0 && AuctionRows == 0 && Error is null && !AddonBlocked;
 }
 
 /// <summary>
@@ -175,6 +179,36 @@ public sealed class Uploader(ApiClient api, Settings settings)
                 {
                     report.Error ??= ex;
                     UploadLog.Append("hotfix", 0, "", "skipped:" + ((ScoutException)ex).Code);
+                }
+
+            // 1.0.14: spelets varelsecache (Cache\WDB\<locale>\creaturecache.wdb) – som hotfix-cachen: bara när rutan är
+            // ikryssad (på som standard) och bara när filen ändrats sedan den senast skickades (sha256).
+            if (settings.UploadCreatureCache)
+                foreach (var file in WowLocator.CreatureCacheFiles(dir))
+                try
+                {
+                    var key = Privacy.FileKey(file);
+                    if (settings.CreatureCacheSha.TryGetValue(key, out var prev) && prev == SafeFs.Sha256Hex(file, ApiClient.MaxCreatureCacheBytes * 2)) continue;
+                    byte[] bytes = ScoutStats.ReadShared(file); // kopiera först (spelet kan ha filen öppen), hasha sedan
+                    var sha = ApiClient.Sha256Hex(bytes);
+                    if (prev == sha) continue;
+                    CreatureCacheResult res;
+                    try { res = await api.UploadCreatureCacheAsync(bytes, ct); }
+                    catch (ApiException ex)
+                    {
+                        UploadLog.Append("varelser", bytes.Length, sha, "error:" + ex.Code + (ex.ServerDetail is { } det ? " " + det : ""));
+                        if (ex.Rejected) { report.Error ??= ex; continue; } // inte markerad som skickad – nytt försök senare
+                        throw;
+                    }
+                    UploadLog.Append("varelser", bytes.Length, sha, (res.Stored ? "ok stored" : "ok duplicate") + $" creatures={res.Creatures}");
+                    settings.CreatureCacheSha[key] = sha;
+                    if (res.Stored) { report.CreatureCacheStored++; report.CreatureCount += res.Creatures; }
+                    settings.Save();
+                }
+                catch (Exception ex) when (IsPerFile(ex))
+                {
+                    report.Error ??= ex;
+                    UploadLog.Append("varelser", 0, "", "skipped:" + ((ScoutException)ex).Code);
                 }
 
             if (settings.ShareAuctionPrices && SafeFs.AuctionFilesAllowed)

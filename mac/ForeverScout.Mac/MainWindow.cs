@@ -288,7 +288,7 @@ internal sealed class MainWindow : Window
         else
         {
             _mineDetail.Children.Add(Look.Label(T("confirmed"), 13, Look.Muted));
-            foreach (var item in st.LastConfirmed.Take(3))
+            foreach (var item in ConfirmedItem.ForDisplay(st.LastConfirmed))
             {
                 var url = item.Url;
                 if (string.IsNullOrEmpty(url)) { _mineDetail.Children.Add(Look.Label("› " + item.Name, 14, Look.Text, FontWeight.Bold)); continue; }

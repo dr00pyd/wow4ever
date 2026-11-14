@@ -11,6 +11,28 @@ public sealed class ConfirmedItem
     public string Name { get; set; } = "";
     /// <summary>Relativ sökväg på sajten, eller null om posten inte har en sida.</summary>
     public string? Url { get; set; }
+
+    /// <summary>Så många senaste fynd som "Mitt bidrag" visar – fler rymdes inte i rutan (2026-11-12: tredje raden
+    /// klipptes).</summary>
+    public const int Shown = 2;
+
+    /// <summary>
+    /// De senaste fynden att visa: samma namn bara en gång (en uppladdning kan bekräfta t.ex. ett quest och föremålet
+    /// med samma namn – "Contingency Plan" stod tre gånger), högst <see cref="Shown"/>.
+    /// </summary>
+    public static List<ConfirmedItem> ForDisplay(IEnumerable<ConfirmedItem> items, int max = Shown)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var list = new List<ConfirmedItem>();
+        foreach (var it in items)
+        {
+            var name = (it.Name ?? "").Trim();
+            if (name.Length == 0 || !seen.Add(name)) continue;
+            list.Add(it);
+            if (list.Count >= max) break;
+        }
+        return list;
+    }
 }
 
 /// <summary>Inställningar och tillstånd i %APPDATA%\ForeverScout\settings.json (nyckeln ligger separat, krypterad).</summary>
@@ -21,6 +43,8 @@ public sealed class Settings
     public string Language { get; set; } = "auto";
     public bool AutoUpload { get; set; } = true;
     public bool UploadHotfix { get; set; } = true;
+    /// <summary>1.0.14: "Skicka varelsecachen (creaturecache.wdb)" – på som standard, som hotfix-cachen.</summary>
+    public bool UploadCreatureCache { get; set; } = true;
     public string? ContributorName { get; set; }
     public string? ContributorId { get; set; }
 
@@ -31,6 +55,8 @@ public sealed class Settings
     public Dictionary<string, string> UploadedSha { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>SHA-256 för senast skickade DBCache.bin per fil.</summary>
     public Dictionary<string, string> HotfixSha { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>1.0.14: SHA-256 för senast skickade creaturecache.wdb per fil.</summary>
+    public Dictionary<string, string> CreatureCacheSha { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// "Dela auktionspriser (Auctionator/Auctioneer)" – av som standard. Bara när den är på får SafeFs läsa
@@ -75,6 +101,11 @@ public sealed class Settings
     public List<ConfirmedItem> LastConfirmed { get; set; } = new();
     /// <summary>L10: högsta signerade "issued" i en godtagen versionsinfo. Äldre versionsinfo avvisas (ingen återuppspelning).</summary>
     public string? ReleaseIssued { get; set; }
+    /// <summary>1.0.13: beta-kanalen ("Betaversioner" i Inställningar) – appen och addonen hämtas från
+    /// /api/bidrag/version?kanal=beta (scout-sign --channel beta). Av som standard.</summary>
+    public bool Beta { get; set; }
+    /// <summary>1.0.13: som <see cref="ReleaseIssued"/>, men för beta-kanalen (egen signerad fil, egen tidsstämpel).</summary>
+    public string? ReleaseIssuedBeta { get; set; }
     /// <summary>
     /// L11: den spelkatalog som användaren valt eller bekräftat. En automatiskt hittad katalog används först när den
     /// bekräftats (en gång). Null i inställningar från ≤ 1.0.6 – då frågar 1.0.7 en gång.
@@ -100,12 +131,13 @@ public sealed class Settings
     /// L10: godkänner en (signaturkontrollerad) versionsinfo bara om dess "issued" inte är äldre än den senaste vi sett,
     /// och sparar det nya högsta värdet. Kastar <see cref="ApiException"/> (release-stale) annars.
     /// </summary>
-    public SignedRelease AcceptRelease(SignedRelease release)
+    public SignedRelease AcceptRelease(SignedRelease release, bool beta = false)
     {
-        var highest = ReleaseVerifier.AcceptIssued(release.Issued, ReleaseIssued);
-        if (!string.Equals(highest, ReleaseIssued, StringComparison.Ordinal))
+        var seen = beta ? ReleaseIssuedBeta : ReleaseIssued;
+        var highest = ReleaseVerifier.AcceptIssued(release.Issued, seen);
+        if (!string.Equals(highest, seen, StringComparison.Ordinal))
         {
-            ReleaseIssued = highest;
+            if (beta) ReleaseIssuedBeta = highest; else ReleaseIssued = highest;
             Save();
         }
         return release;
@@ -126,6 +158,7 @@ public sealed class Settings
         catch (Exception ex) when (ex is JsonException or IOException or SafeFsException or NotSupportedException) { s = new(); }
         s.UploadedSeq = new(s.UploadedSeq, StringComparer.OrdinalIgnoreCase);
         s.HotfixSha = new(s.HotfixSha, StringComparer.OrdinalIgnoreCase);
+        s.CreatureCacheSha = new(s.CreatureCacheSha ?? new(), StringComparer.OrdinalIgnoreCase);
         s.UploadedSha = new(s.UploadedSha, StringComparer.OrdinalIgnoreCase);
         s.AuctionSha = new(s.AuctionSha ?? new(), StringComparer.OrdinalIgnoreCase);
         s.AuctionDay = new(s.AuctionDay ?? new(), StringComparer.OrdinalIgnoreCase);

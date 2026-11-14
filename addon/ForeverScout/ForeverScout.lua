@@ -14,7 +14,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local VERSION = "1.0.10"
+local VERSION = "1.0.18"
 local FORMAT = 1
 local MAX_SPOTS = 50          -- per NPC / object, oldest dropped
 local MAX_LOOT = 2000         -- loot entries, oldest dropped
@@ -39,10 +39,17 @@ local MOB_EXACT = 8           -- exact spots per mob (player within interact dis
 local EXACT_RADIUS = 1        -- map-% : an exact spot this close to a saved one (same map) is the same spot
 local ENC_WINDOW = 300        -- seconds after a won ENCOUNTER_END a loot window with hidden sources may be the boss
 local MAX_BOSSES = 300        -- 1.0.9: encounter → creature rows (bosses), oldest dropped
-local BOSS_CANDIDATES = 3     -- 1.0.9: first corpses looted after a won encounter that are noted as candidates
 local MAX_LATENCY = 300       -- ms : loot is not recorded above this (slot and source data can be stale)
 local DRUNK_MAX = 900         -- seconds a "you feel drunk" message is trusted without a "sober again"
 local TAG_SALT = "ForeverScout-1.0.5|"  -- per-version salt for guidTag (the tag is never the GUID)
+-- 1.0.11: own character progress (chars)
+local MAX_CHARS = 50          -- characters in the file; the one updated longest ago is dropped above this
+local MAX_CHAR_QUESTS = 20000 -- completed quest ids per character
+local MAX_PROFS = 12          -- professions per character
+local MAX_RECIPES = 2000      -- recipe spell ids per profession
+local QUEST_DEBOUNCE = 2      -- seconds after QUEST_TURNED_IN before the completed list is read
+local PROF_DEBOUNCE = 0.5     -- seconds after a profession window event before it is scanned
+local QAT_REFRESH = 86400     -- an unchanged quest list moves qAt at most once a day
 
 local floor, abs, type, tonumber, tostring, pairs, ipairs, select, pcall =
       math.floor, math.abs, type, tonumber, tostring, pairs, ipairs, select, pcall
@@ -71,7 +78,108 @@ local session = {
   mobCount = 0,
   recipes = nil,
   resetArmed = false,
+  replyTo = nil,              -- 1.0.15: the chat window /scout was typed in (only while the command runs)
 }
+
+-- 1.0.15: the chat window our lines go to – the one /scout was typed in, else the selected tab, else the default.
+-- Up to 1.0.14 everything went to DEFAULT_CHAT_FRAME only; a player who reads and types in another window saw
+-- nothing at all from /scout (2026-11-13). A function in session, because the file is near Lua's 200-locals limit.
+function session.out()
+  for _, f in ipairs({ session.replyTo or false, SELECTED_CHAT_FRAME or false, DEFAULT_CHAT_FRAME or false }) do
+    if type(f) == "table" and f.AddMessage then return f end
+  end
+  return nil
+end
+
+-- One chat line in session.out(); if that fails, the game's own print(). Never raises. Returns the way it went
+-- ("frame", "print" or "none") – noted in db.diag so that a silent /scout can be diagnosed from the upload.
+function session.write(text)
+  if session.collect then session.collect[#session.collect + 1] = text end   -- 1.0.17: also for the window
+  local f = session.out()
+  if f and pcall(f.AddMessage, f, text) then return "frame" end
+  if print and pcall(print, text) then return "print" end
+  return "none"
+end
+
+-- 1.0.17: what the chat window says about itself (for db.diag): name, shown/visible, messages before and after a line.
+-- 2026-11-13: /scout reached the addon and AddMessage succeeded, yet the player saw nothing in the chat.
+function session.frameInfo(f)
+  if type(f) ~= "table" then return "none" end
+  local function q(m) local fn = f[m]; if type(fn) ~= "function" then return "?" end
+    local ok, v = pcall(fn, f); return ok and tostring(v) or "err" end
+  return q("GetName") .. " shown=" .. q("IsShown") .. " visible=" .. q("IsVisible") .. " msgs=" .. q("GetNumMessages")
+end
+
+-- 1.0.17: the answer to /scout in a small window of our own when the chat did not take it. 2026-11-13: another addon
+-- (Pigeon) swallowed every chat line from Forever Scout – the player saw nothing. 1.0.18: only then (the chat window's
+-- message count did not grow), never as a second copy. Movable, closes with Esc or the X. Any failure: chat only.
+function session.panel(lines)
+  if type(lines) ~= "table" or #lines == 0 or not CreateFrame then return end
+  pcall(function()
+    local p = session.panelFrame
+    if not p then
+      local f = CreateFrame("Frame", "ForeverScoutPanel", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+      if not (f and f.CreateFontString and f.SetSize and f.CreateTexture) then return end
+      f:SetSize(560, 240)
+      f:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+      f:SetFrameStrata("DIALOG")
+      f:SetClampedToScreen(true)
+      f:SetMovable(true)
+      f:EnableMouse(true)
+      f:RegisterForDrag("LeftButton")
+      f:SetScript("OnDragStart", f.StartMoving)
+      f:SetScript("OnDragStop", f.StopMovingOrSizing)
+      local bg = f:CreateTexture(nil, "BACKGROUND")
+      bg:SetAllPoints()
+      bg:SetColorTexture(0.05, 0.04, 0.03, 0.92)
+      local edge = f:CreateTexture(nil, "BORDER")
+      edge:SetPoint("TOPLEFT"); edge:SetPoint("TOPRIGHT"); edge:SetHeight(26)
+      edge:SetColorTexture(0.35, 0.25, 0.08, 0.95)
+      local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      title:SetPoint("TOPLEFT", 12, -7)
+      title:SetText("Forever Scout")
+      local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+      if close and close.SetPoint then close:SetPoint("TOPRIGHT", 2, 2) end
+      local text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      text:SetPoint("TOPLEFT", 12, -34)
+      text:SetPoint("BOTTOMRIGHT", -12, 10)
+      text:SetJustifyH("LEFT")
+      text:SetJustifyV("TOP")
+      if text.SetWordWrap then text:SetWordWrap(true) end
+      f.text = text
+      if type(UISpecialFrames) == "table" then UISpecialFrames[#UISpecialFrames + 1] = "ForeverScoutPanel" end
+      session.panelFrame = f
+      p = f
+    end
+    local out = {}
+    for i, l in ipairs(lines) do
+      if i > 14 then break end
+      out[#out + 1] = (tostring(l):gsub("^|cff7fb4ffForeverScout|r: ", ""))
+    end
+    p.text:SetText(table.concat(out, "\n"))
+    p:Show()
+    session.diag({ panel = "shown" })
+  end)
+end
+
+-- 1.0.16: diagnostics in the saved file (db.diag), uploaded like everything else, so that an error the game never
+-- shows reaches the site (2026-11-13: /scout said nothing at all in game, and nothing could be seen from here).
+-- Only counters, the last error text (without file paths) and how the last /scout answer was written.
+function session.diag(fields)
+  if type(db) ~= "table" then return end
+  local d = type(db.diag) == "table" and db.diag or {}
+  for k, v in pairs(fields) do d[k] = v end
+  d.t = time and time() or d.t
+  db.diag = d
+end
+
+function session.fail(where, err)
+  session.errors = session.errors + 1
+  local text = tostring(where) .. ": " .. (tostring(err):gsub("^.-[/\\]ForeverScout[/\\]", ""))
+  session.lastError = text
+  local d = type(db) == "table" and type(db.diag) == "table" and db.diag or {}
+  session.diag({ n = (tonumber(d.n) or 0) + 1, last = string.sub(text, 1, 300) })
+end
 
 ---------------------------------------------------------------------------
 -- Safe helpers
@@ -923,11 +1031,42 @@ local function recentGather()
   return nil
 end
 
-local function pushLoot(entry)
+-- 1.0.11: "/scout log on" – en rad i chatten för varje post som sparas, så att en testare ser direkt vad addonen
+-- noterar (t.ex. tärningsslagen i en instans). Per karaktär, av som standard. Bara id:n och föremålsnamn, aldrig
+-- spelarnamn. Skrivs direkt till chatten (say() definieras längre ner).
+local function logLine(fmt, ...)
+  if not (opt and opt.log) then return end
+  local ok, text = pcall(string.format, fmt, ...)
+  if ok then session.write("|cff9fd4ffScout-logg:|r " .. text) end
+end
+
+-- Texterna i spelarens språk (Locale.lua) – samma uppslag som slash-kommandot gör.
+local function LT()
+  return (ns and ns.GetTexts and ns.GetTexts(opt and opt.lang)) or {}
+end
+
+local function itemText(id)
+  local n = try(GetItemInfo, id)
+  return str(n) or ("#" .. tostring(id))
+end
+
+-- note: extra text i loggraden (t.ex. "tärningsslag")
+local function pushLoot(entry, note)
   entry.im = entry.im or instanceMap()   -- 1.0.7: the instance it dropped in (nil outside)
   local loot = db.loot
   loot[#loot + 1] = entry
   while #loot > MAX_LOOT do table.remove(loot, 1) end
+  if opt and opt.log then
+    local names = {}
+    for i, it in ipairs(entry.items or {}) do
+      if i > 5 then names[#names + 1] = "…"; break end
+      names[#names + 1] = itemText(it.id) .. ((num(it.c) or 1) > 1 and (" x" .. it.c) or "")
+    end
+    local L = LT()
+    if #names == 0 and entry.money then names[1] = L.log_money or "money" end
+    logLine(L.log_loot or "loot %s %s: %s%s%s", tostring(entry.src), tostring(entry.id), table.concat(names, ", "), note and (" (" .. note .. ")") or "",
+            entry.im and string.format(L.log_inst or " – %d", entry.im) or "")
+  end
 end
 
 -- Fishing: one entry per catch (src = "fish", id = uiMapID where it was caught, plus the position), deduped per
@@ -963,8 +1102,8 @@ local SECRET_SOURCE = "?"   -- loot slots whose source GUID the game hides (secr
 
 -- 1.0.8: defined after the mob and kill code (see "Looted in an instance" below).
 local noteLootedMob
--- 1.0.9: defined with the boss code (see "Bosses" below).
-local noteBossCandidate
+-- 1.0.11: defined with ENCOUNTER_END below.
+local encTag
 
 -- 1.0.5: who dropped loot whose source GUIDs are hidden? First the dead target when its GUID is readable, then the
 -- boss of a won encounter (ENCOUNTER_END) in the last ENC_WINDOW seconds – once per encounter, and only if a dead
@@ -1049,13 +1188,11 @@ local function onLootOpened()
       if kind and (#s.items > 0 or s.money > 0) then
         -- h = corpse/chest tag (guidTag) so the server counts a corpse once when several group members upload it.
         pushLoot({ q = nextSeq(), t = now(), src = src, id = id, items = s.items, money = s.money > 0 and s.money or nil,
-                   h = kind ~= "boss" and guidTag(guid) or nil, grp = grp, pf = pf })
+                   h = kind ~= "boss" and guidTag(guid) or encTag(session.encounter), grp = grp, pf = pf })
         touch("loot", tostring(id))
         -- 1.0.8: inside an instance the game hides targets from addons, so the mob and the kill are noted here,
         -- where the corpse's GUID is readable.
         if kind == "npc" and src == "npc" and noteLootedMob then noteLootedMob(guid, id, grp) end
-        -- 1.0.9: a creature looted right after a won encounter may be its boss.
-        if kind == "npc" and src == "npc" and instanceMap() then noteBossCandidate(id) end
         if kind == "object" then
           local name = (t - (session.sentAt or 0) <= NAME_WINDOW) and session.sentName or nil
           session.sentName, session.sentAt = nil, 0   -- used once (L13)
@@ -1073,18 +1210,20 @@ end
 
 -- Inside instances the game hides creature names from addons, so the site cannot tell which creature id is which boss
 -- (The Hall of Thanes, 2026-11-11). The encounter id is public and the client knows its name (DungeonEncounter).
--- Two ways to tie them together, both saved as { e = encounter, id = creature, im = instance, s = source, o, r, t, q }:
+-- Two ways to tie them together, both straight from the game, saved as { e = encounter, id = creature, im = instance,
+-- s = source, o, t, q }:
 --   s = "u": the encounter's own units boss1–boss5 during the fight, o = the unit number – certain when readable;
---   s = "l": the first BOSS_CANDIDATES creatures looted within ENC_WINDOW after a WON encounter, o = order (1 = first)
---            and r = the fight (the same r for the candidates of one fight) – a candidate only; the server needs
---            several fights that agree before it believes it.
+--   s = "e": 1.0.13 – the creatures the game itself lists when the encounter is WON (ENCOUNTER_END's sixth argument,
+--            encounterUnitStatus[i].creatureID – what Wowhead Looter uses), o = the order in that list.
+-- 1.0.9–1.0.12 also sent s = "l" (the first corpses looted after the fight) – a guess; the user's rule 2026-11-13 is
+-- that the boss is never guessed, so it is gone. The site also has its own boss list (data/boss-npcs.json).
 -- Never a name, a GUID or a position.
 local function pushBoss(e, id, s, o, r)
   local im = instanceMap()
   if not im or not e or not id then return end
   local list = db.bosses
-  if s == "u" then
-    for _, b in ipairs(list) do if b.s == "u" and b.e == e and b.id == id then return end end  -- once is enough
+  if s == "u" or s == "e" then
+    for _, b in ipairs(list) do if b.s == s and b.e == e and b.id == id then return end end  -- once is enough
   end
   list[#list + 1] = { e = e, id = id, im = im, s = s, o = o, r = r, t = floor(now() / 86400) * 86400, q = nextSeq() }
   while #list > MAX_BOSSES do table.remove(list, 1) end
@@ -1108,26 +1247,56 @@ local function onEncounterStart(encounterId)
   scanBossUnits()
 end
 
--- After a won encounter: the first corpses looted are boss candidates (see above).
-noteBossCandidate = function(id)
-  local e = session.encounter
-  if not e or not id or (num(try(GetTime)) or 0) - e.at > ENC_WINDOW then return end
-  e.cands = e.cands or {}
-  if e.cands[id] or #e.cands >= BOSS_CANDIDATES then return end
-  e.cands[id] = true
-  e.cands[#e.cands + 1] = id
-  e.run = e.run or floor(now())
-  pushBoss(e.id, id, "l", #e.cands, e.run)
-end
 
--- ENCOUNTER_END(encounterID, name, difficultyID, groupSize, success): a won encounter may own the next loot window
--- whose sources are hidden (hiddenSource). The name is only compared, never saved.
-local function onEncounterEnd(encounterId, name, _, _, success)
+-- ENCOUNTER_END(encounterID, name, difficultyID, groupSize, success, encounterUnitStatus): a won encounter may own the
+-- next loot window whose sources are hidden (hiddenSource). The name is only compared, never saved.
+local function onEncounterEnd(encounterId, name, _, _, success, units)
   scanBossUnits()   -- 1.0.9: last chance to read boss1–boss5 before they disappear
   session.fight = nil
   encounterId = num(encounterId)
   if not encounterId or encounterId <= 0 or num(success) ~= 1 then return end
-  session.encounter = { id = encounterId, name = str(name), at = num(try(GetTime)) or 0 }
+  -- 1.0.13: the boss creatures as the game lists them (s = "e", see "Bosses" above). Hidden ids are skipped.
+  if type(units) == "table" then
+    local o = 0
+    for _, u in ipairs(units) do
+      local cid = type(u) == "table" and num(clean(u.creatureID)) or nil
+      if cid and cid > 0 and o < 5 then o = o + 1; pushBoss(encounterId, cid, "e", o) end
+    end
+  end
+  -- sb = 5-minutersfönster enligt serverns klocka: samma för alla i gruppen, så att bossens lik får samma tagg hos alla
+  -- (encTag) – servern räknar det en gång, oavsett hur många som laddar upp det.
+  local st = num(try(GetServerTime)) or now()
+  session.encounter = { id = encounterId, name = str(name), at = num(try(GetTime)) or 0, sb = floor(st / 300) }
+end
+
+-- 1.0.11: taggen för en vunnen bosskamp (encounter-id + serverns 5-minutersfönster) – ingen GUID behövs.
+encTag = function(e)
+  if not (e and e.id) then return nil end
+  return guidTag("enc:" .. e.id .. ":" .. tostring(e.sb or 0))
+end
+
+-- 1.0.11: tärningsslag i grupp (START_LOOT_ROLL). Liket öppnades av någon annan och föremålet delas ut genom slag –
+-- förr såg bara den som öppnade liket det (Stockade 2026-11-12: Kam's Walking Stick saknades). Efter en vunnen
+-- bosskamp (ENC_WINDOW) är det bossens loot; annars hoppas slaget över (vilket trashlik det kom från går inte att veta).
+-- Samma tagg som bossens loot med dold källa (encTag), så servern slår ihop allt från samma kamp.
+-- 1.0.13: bara tills gruppen går in i en ny strid (PLAYER_REGEN_DISABLED efter kampen, e.fight). Stockade 2026-11-12:
+-- slag på trash som dödades efter bossen (Sealed Journeyman's Writ efter Targorr, Fighter Broadsword efter Hamhock)
+-- räknades till bossen. Bossens lik öppnas nästan alltid före nästa drag; ett sent slag går hellre förlorat än fel.
+local function onLootRoll(rollId)
+  rollId = num(rollId)
+  local e = session.encounter
+  if not rollId or not e or (num(try(GetTime)) or 0) - e.at > ENC_WINDOW then return end
+  local key = "roll|" .. rollId
+  if session.looted[key] then return end
+  local link = try(GetLootRollItemLink, rollId)
+  local itemId = itemIdFromLink(link)
+  if not itemId then return end
+  session.looted[key] = true
+  if e.fight then logLine(LT().log_roll_skip, itemText(itemId)); return end
+  local _, _, count = try(GetLootRollItemInfo, rollId)
+  pushLoot({ q = nextSeq(), t = now(), src = "boss", id = e.id, items = { { id = itemId, c = num(count) or 1, s = suffixFromLink(link) } },
+             h = encTag(e), grp = true, pf = str(try(UnitFactionGroup, "player")) }, LT().log_roll)
+  touch("loot", tostring(e.id))
 end
 
 -- CHAT_MSG_SYSTEM: only compared with the client's own drunk/sober texts (DRUNK_MESSAGE_SELF1–4) for the drunk
@@ -1329,6 +1498,10 @@ end
 -- loot yes/no (nil = unknown) and the group flag – never the GUID. Event-driven only (target changes, the target's
 -- UNIT_HEALTH, leaving combat).
 local function pushKill(entry)
+  if opt and opt.log then
+    local L = LT()
+    logLine(L.log_kill or "kill npc %s%s", tostring(entry.id), entry.loot == false and (L.log_noloot or "") or "")
+  end
   local kills = db.kills
   kills[#kills + 1] = entry
   while #kills > MAX_KILLS do table.remove(kills, 1) end
@@ -1540,6 +1713,335 @@ local function queueRecipeScan()
 end
 
 ---------------------------------------------------------------------------
+-- Own character progress (1.0.11): completed quests and known recipes
+---------------------------------------------------------------------------
+
+-- ForeverScoutDB.chars[<id>] = { lvl, cls, at, q, qAt, prof = { [skill line name] = { r, m, s, at } } }
+-- (docs/briefs/SCOUT-KONTRAKT.md, "chars (1.0.11)"). <id> = the numeric low part of the player's own GUID
+-- ("Player-<realm>-<HEX>" -> tonumber(HEX, 16)) as a decimal string – the same number as the Blizzard Profile API
+-- character id. Never a name (character, realm, guild), never the GUID itself, never another player's data.
+-- Work only on events (login, quest turned in, profession window, logout), debounced and never in combat.
+
+-- The player's character id as a decimal string, or nil. Cached for the session (it never changes).
+local function charKey()
+  if session.charKey then return session.charKey end
+  local g = str(try(UnitGUID, "player"))
+  local hex = g and g:match("^Player%-%d+%-(%x+)$")
+  if not hex or #hex > 12 then return nil end
+  local id = tonumber(hex, 16)
+  if not id or id <= 0 then return nil end
+  session.charKey = string.format("%.0f", id)
+  return session.charKey
+end
+
+-- Ascending, comma-separated list of the numeric keys of set (at most cap), and its length.
+local function idList(set, cap)
+  local ids = {}
+  for id in pairs(set) do ids[#ids + 1] = id end
+  table.sort(ids)
+  local n = math.min(#ids, cap)
+  local parts = {}
+  for i = 1, n do parts[i] = string.format("%.0f", ids[i]) end
+  return table.concat(parts, ","), n
+end
+
+local function idSet(s, into)
+  into = into or {}
+  if type(s) == "string" then
+    for v in s:gmatch("%d+") do into[tonumber(v)] = true end
+  end
+  return into
+end
+
+-- In combat? Only an explicit "yes" counts (a missing API never blocks the collector).
+local function fighting()
+  return unitFlag(InCombatLockdown) == true
+end
+
+-- The entry for this character, created on first use; nil without a readable id. Oldest entries go above MAX_CHARS.
+local function charEntry()
+  -- Påslaget för alla (användarens beslut 2026-11-12); "/scout char off" stänger av och tar bort posten.
+  if opt and opt.progressOff then return nil end
+  local key = charKey()
+  if not key then return nil end
+  if type(db.chars) ~= "table" then db.chars = {} end
+  local c = db.chars[key]
+  if type(c) ~= "table" then
+    local n, oldestKey, oldestAt = 0, nil, nil
+    for k, v in pairs(db.chars) do
+      n = n + 1
+      local at = type(v) == "table" and tonumber(v.at) or 0
+      if not oldestAt or at < oldestAt then oldestKey, oldestAt = k, at end
+    end
+    if n >= MAX_CHARS and oldestKey then db.chars[oldestKey] = nil end
+    c = { q = "", prof = {}, at = now() }
+    db.chars[key] = c
+    nextSeq()
+  end
+  if type(c.prof) ~= "table" then c.prof = {} end
+  return c
+end
+
+-- Level and class (the class token, e.g. "PRIEST"). Returns true when either changed.
+local function charBasics(c)
+  local changed = false
+  local l = num(try(UnitLevel, "player"))
+  if l and l > 0 and c.lvl ~= l then c.lvl = l; changed = true end
+  local _, classFile = try(UnitClass, "player")
+  classFile = str(classFile)
+  if classFile and c.cls ~= classFile then c.cls = classFile; changed = true end
+  return changed
+end
+
+local function charChanged(c)
+  c.at = now()
+  nextSeq()
+end
+
+-- Completed quests: GetQuestsCompleted() ({ [questID] = true }), else C_QuestLog.GetAllCompletedQuestIDs() ({ id, … }).
+local function completedQuests()
+  local set, n = {}, 0
+  local t = try(GetQuestsCompleted)
+  if type(t) == "table" then
+    for id, v in pairs(t) do
+      id = num(id)
+      if id and id > 0 and id == floor(id) and clean(v) then set[id] = true; n = n + 1 end
+    end
+  end
+  if n == 0 and C_QuestLog then
+    t = try(C_QuestLog.GetAllCompletedQuestIDs)
+    if type(t) == "table" then
+      for _, id in ipairs(t) do
+        id = num(id)
+        if id and id > 0 and id == floor(id) then set[id] = true; n = n + 1 end
+      end
+    end
+  end
+  return set, n
+end
+
+-- Re-reads the completed quests. An empty answer never replaces a stored list (the data may not be loaded yet).
+-- qAt moves when the list changes, or at most once a day when it is unchanged, so an unchanged file stays unchanged.
+local function refreshQuests()
+  local c = charEntry()
+  if not c then return end
+  local changed = charBasics(c)
+  local set, n = completedQuests()
+  local t = now()
+  if n > 0 then
+    local s = idList(set, MAX_CHAR_QUESTS)
+    if s ~= c.q then c.q = s; c.qAt = t; changed = true
+    elseif t - (tonumber(c.qAt) or 0) >= QAT_REFRESH then c.qAt = t; changed = true end
+  end
+  if type(c.q) ~= "string" then c.q = ""; changed = true end
+  if changed then charChanged(c) end
+end
+
+local questsPending = false
+local function queueQuestRefresh(delay)
+  if questsPending then return end
+  questsPending = true
+  after(delay or QUEST_DEBOUNCE, function()
+    questsPending = false
+    if fighting() then session.questsAfterCombat = true; return end
+    refreshQuests()
+  end)
+end
+
+local function recipeSpell(link)
+  link = str(link)
+  if not link then return nil end
+  local id = tonumber(link:match("enchant:(%d+)") or link:match("spell:(%d+)"))
+  if id and id > 0 then return id end
+  return nil   -- an item link (or anything else): skipped, never guessed
+end
+
+-- A Classic list window (trade skills or crafts) – is anything hidden? A collapsed header, a search text, "have
+-- materials" or a sub-class/slot filter. Unknown counts as not filtered (the shrink guard in storeProfession
+-- still keeps a stored list from shrinking).
+local function uiFiltered(prefix)
+  local G = _G or {}
+  for _, name in ipairs({ prefix .. "SearchBox", prefix .. "FrameSearchBox" }) do
+    local box = G[name]
+    if type(box) == "table" and type(box.GetText) == "function" and str(try(box.GetText, box)) then return true end
+  end
+  local cb = G[prefix .. "FrameAvailableFilterCheckButton"]
+  if type(cb) == "table" and type(cb.GetChecked) == "function" and clean(try(cb.GetChecked, cb)) then return true end
+  return false
+end
+
+local function tradeFiltered()
+  if str(try(GetTradeSkillItemNameFilter)) then return true end
+  local lo, hi = try(GetTradeSkillItemLevelFilter)
+  if (num(lo) or 0) > 0 or (num(hi) or 0) > 0 then return true end
+  if GetTradeSkillSubClassFilter and unitFlag(GetTradeSkillSubClassFilter, 0) == false then return true end
+  if GetTradeSkillInvSlotFilter and unitFlag(GetTradeSkillInvSlotFilter, 0) == false then return true end
+  return uiFiltered("TradeSkill")
+end
+
+-- Is the open trade skill someone else's (a linked or guild profession) or an NPC's? Then nothing is recorded.
+local function notOwnTradeSkill()
+  local T = C_TradeSkillUI
+  if T then
+    for _, k in ipairs({ "IsTradeSkillLinked", "IsTradeSkillGuild", "IsNPCCrafting", "IsTradeSkillGuildMember" }) do
+      local f = T[k]
+      if type(f) == "function" and unitFlag(f) == true then return true end
+    end
+  end
+  if IsTradeSkillLinked and unitFlag(IsTradeSkillLinked) == true then return true end
+  return false
+end
+
+-- Name, rank, max of the open trade skill: GetTradeSkillLine (Classic), C_TradeSkillUI.GetTradeSkillLine (older
+-- Mainline), C_TradeSkillUI.GetBaseProfessionInfo/GetChildProfessionInfo (Mainline).
+local function tradeLine()
+  local name, rank, max = try(GetTradeSkillLine)
+  name, rank, max = str(name), num(rank), num(max)
+  if name and name ~= "UNKNOWN" and rank then return name, rank, max end
+  local T = C_TradeSkillUI
+  if not T then return nil end
+  local _, n2, r2, m2 = try(T.GetTradeSkillLine)
+  n2, r2, m2 = str(n2), num(r2), num(m2)
+  if n2 and n2 ~= "UNKNOWN" and r2 then return n2, r2, m2 end
+  local base = try(T.GetBaseProfessionInfo)
+  local child = try(T.GetChildProfessionInfo)
+  base = type(base) == "table" and base or {}
+  child = type(child) == "table" and child or {}
+  local n3 = str(base.professionName) or str(child.parentProfessionName) or str(child.professionName)
+  local r3, m3 = num(child.skillLevel), num(child.maxSkillLevel)
+  if not r3 or r3 <= 0 then r3, m3 = num(base.skillLevel), num(base.maxSkillLevel) end
+  if n3 and r3 then return n3, r3, m3 end
+  return nil
+end
+
+-- Known recipe spell ids of the open trade skill window. Returns set, count, filtered.
+local function tradeRecipes()
+  local set, n = {}, 0
+  local rows = num(try(GetNumTradeSkills))
+  if rows and rows > 0 then
+    -- Classic: one row per recipe or header; the recipe link carries the spell id.
+    local filtered = tradeFiltered()
+    for i = 1, rows do
+      local _, kind, _, expanded = try(GetTradeSkillInfo, i)
+      kind = clean(kind)
+      if kind == "header" or kind == "subheader" then
+        if clean(expanded) == false then filtered = true end   -- a collapsed header hides its recipes
+      elseif kind then
+        local id = recipeSpell(try(GetTradeSkillRecipeLink, i))
+        if id and not set[id] then set[id] = true; n = n + 1 end
+      end
+    end
+    return set, n, filtered
+  end
+  -- Mainline: every recipe of the profession (unfiltered), recipe id = spell id, only the learned ones.
+  local T = C_TradeSkillUI
+  local ids = T and try(T.GetAllRecipeIDs)
+  if type(ids) == "table" then
+    for _, rid in ipairs(ids) do
+      rid = num(rid)
+      local info = rid and try(T.GetRecipeInfo, rid)
+      if type(info) == "table" and clean(info.learned) == true and not clean(info.isDummyRecipe) then
+        if not set[rid] then set[rid] = true; n = n + 1 end
+      end
+    end
+  end
+  return set, n, false
+end
+
+-- Classic crafts (Enchanting): GetCraftDisplaySkillLine, rows from GetCraftInfo, spell id from GetCraftRecipeLink
+-- or GetCraftItemLink when that is an enchant:/spell: link. A craft without a skill line (Beast Training) is skipped.
+local function craftRecipes()
+  local name, rank, max = try(GetCraftDisplaySkillLine)
+  name, rank, max = str(name), num(rank), num(max)
+  if not name or not rank then return nil end
+  local set, n = {}, 0
+  local filtered = uiFiltered("Craft")
+  for i = 1, (num(try(GetNumCrafts)) or 0) do
+    local _, _, kind, _, expanded = try(GetCraftInfo, i)
+    kind = clean(kind)
+    if kind == "header" or kind == "subheader" then
+      if clean(expanded) == false then filtered = true end
+    elseif kind then
+      local id = recipeSpell(try(GetCraftRecipeLink, i)) or recipeSpell(try(GetCraftItemLink, i))
+      if id and not set[id] then set[id] = true; n = n + 1 end
+    end
+  end
+  return name, rank, max, set, n, filtered
+end
+
+-- Stores one profession. A filtered window (or a full list that is shorter while the rank did not drop – a filter
+-- the addon could not see) only adds recipes; a full list replaces the stored one (e.g. a profession relearned).
+local function storeProfession(name, rank, max, set, n, filtered)
+  if not name or n == 0 then return end
+  local c = charEntry()
+  if not c then return end
+  local changed = charBasics(c)
+  local p = c.prof[name]
+  local isNew = type(p) ~= "table"
+  if isNew then
+    local np = 0
+    for _ in pairs(c.prof) do np = np + 1 end
+    if np >= MAX_PROFS then return end
+    p = {}
+  end
+  local old = idSet(p.s)
+  local oldN = 0
+  for _ in pairs(old) do oldN = oldN + 1 end
+  local keep = filtered or (oldN > n and rank >= (tonumber(p.r) or 0))
+  if keep then for id in pairs(old) do set[id] = true end end
+  local s = idList(set, MAX_RECIPES)
+  max = max and max >= rank and max or rank
+  if isNew or p.s ~= s or p.r ~= rank or p.m ~= max then
+    p.r, p.m, p.s, p.at = rank, max, s, now()
+    c.prof[name] = p
+    changed = true
+  end
+  if changed then charChanged(c); touch("recipes", name) end
+end
+
+local function scanProfessions()
+  local kinds = session.profKinds or {}
+  session.profKinds = {}
+  if kinds.trade and not notOwnTradeSkill() then
+    local name, rank, max = tradeLine()
+    if name then
+      local set, n, filtered = tradeRecipes()
+      storeProfession(name, rank, max, set, n, filtered)
+    end
+  end
+  if kinds.craft then
+    local name, rank, max, set, n, filtered = craftRecipes()
+    if name then storeProfession(name, rank, max, set, n, filtered) end
+  end
+end
+
+local profPending = false
+local function queueProfScan(kind)
+  session.profKinds = session.profKinds or {}
+  session.profKinds[kind] = true
+  if profPending then return end
+  profPending = true
+  after(PROF_DEBOUNCE, function()
+    profPending = false
+    if fighting() then session.profAfterCombat = true; return end
+    scanProfessions()
+  end)
+end
+
+-- PLAYER_REGEN_ENABLED: work that was postponed in combat.
+local function charAfterCombat()
+  if session.questsAfterCombat then session.questsAfterCombat = false; refreshQuests() end
+  if session.profAfterCombat then session.profAfterCombat = false; scanProfessions() end
+end
+
+local function charLevelUp()
+  after(1, function()
+    local c = charEntry()
+    if c and charBasics(c) then charChanged(c) end
+  end)
+end
+
+---------------------------------------------------------------------------
 -- Database
 ---------------------------------------------------------------------------
 
@@ -1549,7 +2051,7 @@ local function newInstallId()
   return table.concat(hex)
 end
 
-local TABLES = { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail", "kills", "bosses" }
+local TABLES = { "npcs", "trainers", "vendors", "quests", "objects", "loot", "flights", "mobs", "mail", "kills", "bosses", "chars" }
 
 local function ensureTables(d)
   for _, k in ipairs(TABLES) do
@@ -1591,10 +2093,8 @@ local function T()
 end
 
 local function say(msg)
-  local frame = DEFAULT_CHAT_FRAME
-  if frame and frame.AddMessage then
-    try(frame.AddMessage, frame, "|cff7fb4ffForeverScout|r: " .. tostring(msg))
-  end
+  local how = session.write("|cff7fb4ffForeverScout|r: " .. tostring(msg))
+  if session.replyTo ~= nil or how ~= "frame" then session.diag({ out = how }) end
 end
 
 -- /scout test (1.0.8): what the game lets the addon read about the current target right now – to find out why
@@ -1619,6 +2119,25 @@ local function diagnose()
       say(unit .. ": none")
     end
   end
+  -- 1.0.11: own character progress – counts only, never a name or the id.
+  local nChars, nq, np = 0, 0, 0
+  for _ in pairs(db.chars or {}) do nChars = nChars + 1 end
+  local key = charKey()
+  local c = key and db.chars and db.chars[key]
+  if type(c) == "table" then
+    local _, n = idList(idSet(c.q), MAX_CHAR_QUESTS)
+    nq = n
+    for _ in pairs(c.prof or {}) do np = np + 1 end
+  end
+  say("chars: " .. nChars .. " (this character: "
+    .. (type(c) == "table" and ("quests=" .. nq .. " professions=" .. np) or (key and "none yet" or "id unreadable")) .. ")")
+  local function has(f) return type(f) == "function" and "y" or "n" end
+  local QL, TS = C_QuestLog or {}, C_TradeSkillUI or {}
+  say("api: GetQuestsCompleted=" .. has(GetQuestsCompleted) .. " GetAllCompletedQuestIDs=" .. has(QL.GetAllCompletedQuestIDs)
+    .. " GetTradeSkillLine=" .. has(GetTradeSkillLine) .. " GetTradeSkillRecipeLink=" .. has(GetTradeSkillRecipeLink)
+    .. " C_TradeSkillUI.GetAllRecipeIDs=" .. has(TS.GetAllRecipeIDs) .. " GetBaseProfessionInfo=" .. has(TS.GetBaseProfessionInfo)
+    .. " GetCraftDisplaySkillLine=" .. has(GetCraftDisplaySkillLine) .. " GetCraftRecipeLink=" .. has(GetCraftRecipeLink)
+    .. " GetCraftItemLink=" .. has(GetCraftItemLink))
 end
 
 local function count(t)
@@ -1654,9 +2173,52 @@ local function showStatus()
   say(string.format(L.status_char, (opt and opt.char) and L.on or L.off))
 end
 
+-- 1.0.12: "/scout tipsa" (svensk rad) och "/scout share" (engelsk rad) – en rad i grupp-, raid- eller guildchatten om
+-- Forever Scout, så att spelaren kan tipsa andra. Språket följer kommandot, inte addonens språk: tipsa = svenska,
+-- share = engelska (med var sin länk). Skrivs ALDRIG automatiskt, bara när spelaren själv kör kommandot, och högst en
+-- gång per minut. Kanalen: det spelaren skriver (grupp/raid/guild), annars gruppen (instansgrupp, raid eller party),
+-- annars guilden. Allt under ett namn – huvudfilen ligger nära Luas gräns på 200 lokala variabler.
+local share
+do
+  local COOLDOWN = 60
+  local ARGS = {
+    grupp = "group", group = "group", party = "group", raid = "group",
+    guild = "guild", gille = "guild", g = "guild",
+  }
+
+  local function channelFor(arg)
+    local want = ARGS[arg or ""]
+    if want ~= "guild" and try(IsInGroup) then
+      local instanceOnly = LE_PARTY_CATEGORY_INSTANCE and try(IsInGroup, LE_PARTY_CATEGORY_INSTANCE)
+                           and not (LE_PARTY_CATEGORY_HOME and try(IsInGroup, LE_PARTY_CATEGORY_HOME))
+      if instanceOnly then return "INSTANCE_CHAT" end
+      return try(IsInRaid) and "RAID" or "PARTY"
+    end
+    if want ~= "group" and try(IsInGuild) then return "GUILD" end
+    return nil, want
+  end
+
+  -- L = addonens språk (för svaren till spelaren), lang = tipsradens språk ("sv" eller "en")
+  function share(L, arg, lang)
+    local t = num(try(GetTime)) or 0
+    if session.sharedAt and t - session.sharedAt < COOLDOWN then
+      say(string.format(L.share_wait, math.ceil(COOLDOWN - (t - session.sharedAt)))); return
+    end
+    local channel, want = channelFor(arg)
+    if not channel then say(want == "guild" and L.share_noguild or L.share_alone); return end
+    local send = SendChatMessage or (C_ChatInfo and C_ChatInfo.SendChatMessage)
+    local msg = ns.GetTexts and ns.GetTexts(lang).share_msg
+    if not send or not msg then say(L.share_failed); return end
+    if not pcall(send, msg, channel) then say(L.share_failed); return end
+    session.sharedAt = t
+    say(string.format(L.share_sent, L["share_ch_" .. channel] or channel))
+  end
+end
+
 local function onSlash(msg)
-  if not db then return end
   local L = T()
+  -- 1.0.15: never silent – before ADDON_LOADED (or if it failed) say so
+  if not db then say(L.not_started or "not started yet – type /reload"); return end
   msg = (type(msg) == "string" and msg or ""):lower()
   local cmd, arg = msg:match("^%s*(%S*)%s*(.-)%s*$")
   if cmd ~= "reset" then session.resetArmed = false end
@@ -1666,12 +2228,23 @@ local function onSlash(msg)
     for _, line in ipairs(L.help) do say(line) end
   elseif cmd == "char" then
     if arg == "on" then
-      opt.char = true; updateChar(); say(L.char_on)
+      opt.char = true; opt.progressOff = nil; updateChar(); refreshQuests(); say(L.char_on)
     elseif arg == "off" then
-      opt.char = false; db.char = nil; session.recipes = nil; say(L.char_off)
+      opt.char = false; db.char = nil; session.recipes = nil
+      -- 1.0.11: även den här karaktärens avklarade quests och recept (chars) – och de samlas inte in igen
+      opt.progressOff = true
+      local key = charKey()
+      if key and type(db.chars) == "table" and db.chars[key] then db.chars[key] = nil; nextSeq() end
+      say(L.char_off)
     else
       say(string.format(L.status_char, opt.char and L.on or L.off))
     end
+  elseif cmd == "tipsa" or cmd == "share" then
+    share(L, arg, cmd == "tipsa" and "sv" or "en")
+  elseif cmd == "log" then
+    -- 1.0.11: loggrader i chatten för testare (av som standard, per karaktär)
+    if arg == "on" then opt.log = true elseif arg == "off" then opt.log = nil else opt.log = not opt.log or nil end
+    say(opt.log and L.log_on or L.log_off)
   elseif cmd == "lang" then
     if arg == "sv" or arg == "en" then opt.lang = arg else opt.lang = nil end
     L = T()
@@ -1735,8 +2308,15 @@ local handlers = {
   -- 1.0.5: kills (the target's health and leaving combat), encounters, the drunk guard, more service roles and
   -- object positions from readable and soft-interact objects.
   UNIT_HEALTH = function(unit) if unit == "target" then watchTarget() end end,
-  PLAYER_REGEN_ENABLED = watchTarget,
+  PLAYER_REGEN_ENABLED = function() watchTarget(); charAfterCombat() end,
+  -- 1.0.13: ny strid efter en vunnen bosskamp – tärningsslag efter det kan vara trash (onLootRoll). 2 s marginal om
+  -- stridsflaggan blinkar när bossen dör.
+  PLAYER_REGEN_DISABLED = function()
+    local e = session.encounter
+    if e and (num(try(GetTime)) or 0) - e.at > 2 then e.fight = true end
+  end,
   ENCOUNTER_END = onEncounterEnd,
+  START_LOOT_ROLL = function(rollId) onLootRoll(rollId) end,
   ENCOUNTER_START = onEncounterStart,
   INSTANCE_ENCOUNTER_ENGAGE_UNIT = scanBossUnits,
   CHAT_MSG_SYSTEM = onSystemMessage,
@@ -1749,11 +2329,25 @@ local handlers = {
   UNIT_SPELLCAST_SENT = onSpellcastSent,
   UNIT_SPELLCAST_SUCCEEDED = onSpellcastSucceeded,
   LOOT_OPENED = onLootOpened,
-  TRADE_SKILL_SHOW = queueRecipeScan,
-  TRADE_SKILL_LIST_UPDATE = queueRecipeScan,
-  PLAYER_LEVEL_UP = function() after(1, updateChar) end,
+  -- 1.0.11: profession windows also record this character's known recipes (chars); quests turned in, login and
+  -- logout its completed quests.
+  TRADE_SKILL_SHOW = function() queueRecipeScan(); queueProfScan("trade") end,
+  TRADE_SKILL_LIST_UPDATE = function() queueRecipeScan(); queueProfScan("trade") end,
+  TRADE_SKILL_UPDATE = function() queueProfScan("trade") end,
+  -- Forever (1.60, nyare klient): receptlistan laddas i omgångar – byte av yrke i fönstret och sen laddning kommer
+  -- som DATA_SOURCE_CHANGED. Tomma läsningar ersätter aldrig sparade recept (se storeProfession).
+  TRADE_SKILL_DATA_SOURCE_CHANGED = function() queueRecipeScan(); queueProfScan("trade") end,
+  CRAFT_SHOW = function() queueProfScan("craft") end,
+  CRAFT_UPDATE = function() queueProfScan("craft") end,
+  QUEST_TURNED_IN = function() queueQuestRefresh(QUEST_DEBOUNCE) end,
+  PLAYER_ENTERING_WORLD = function()
+    if session.loginQuests then return end
+    session.loginQuests = true
+    queueQuestRefresh(5)
+  end,
+  PLAYER_LEVEL_UP = function() after(1, updateChar); charLevelUp() end,
   SKILL_LINES_CHANGED = function() after(1, updateChar) end,
-  PLAYER_LOGOUT = function() updateChar() end,
+  PLAYER_LOGOUT = function() updateChar(); refreshQuests() end,
   -- 1.0.6: one line in chat after login and /reload, so that players can see that the addon is loaded.
   PLAYER_LOGIN = function() after(5, function() say(string.format(T().loaded or "%s", VERSION)) end) end,
 }
@@ -1783,10 +2377,7 @@ end
 if frame then
   frame:SetScript("OnEvent", function(self, event, ...)
     local ok, err = pcall(dispatch, self, event, ...)
-    if not ok then
-      session.errors = session.errors + 1
-      session.lastError = tostring(event) .. ": " .. tostring(err)
-    end
+    if not ok then session.fail(event, err) end
   end)
   try(frame.RegisterEvent, frame, "ADDON_LOADED")
 end
@@ -1794,12 +2385,31 @@ end
 SLASH_FOREVERSCOUT1 = "/scout"
 SLASH_FOREVERSCOUT2 = "/foreverscout"
 if SlashCmdList then
-  SlashCmdList.FOREVERSCOUT = function(msg)
+  SlashCmdList.FOREVERSCOUT = function(msg, editBox)
+    -- 1.0.15: answer in the chat window the command was typed in
+    session.replyTo = type(editBox) == "table" and type(editBox.chatFrame) == "table" and editBox.chatFrame or nil
+    local d = type(db) == "table" and type(db.diag) == "table" and db.diag or {}
+    session.diag({ slash = (tonumber(d.slash) or 0) + 1, to = session.replyTo and "edit" or (SELECTED_CHAT_FRAME and "selected" or "default") })
+    local f = session.out()
+    local before = session.frameInfo(f)
+    local n0 = type(f) == "table" and type(f.GetNumMessages) == "function" and select(2, pcall(f.GetNumMessages, f)) or nil
+    session.collect = {}
     local ok, err = pcall(onSlash, msg)
+    session.diag({ frame = before .. " -> " .. session.frameInfo(f) })
+    local n1 = type(f) == "table" and type(f.GetNumMessages) == "function" and select(2, pcall(f.GetNumMessages, f)) or nil
+    -- a full chat window (GetMaxLines, often 128) drops its oldest line for each new one, so the count cannot grow:
+    -- then nothing can be told and the window is not shown
+    local max = type(f) == "table" and type(f.GetMaxLines) == "function" and select(2, pcall(f.GetMaxLines, f)) or nil
+    local swallowed = type(n0) == "number" and type(n1) == "number" and type(max) == "number" and n0 < max and n1 <= n0
     if not ok then
-      session.errors = session.errors + 1
-      session.lastError = "slash: " .. tostring(err)
+      session.fail("slash", err)
+      -- 1.0.15: show the error – a silent failure cannot be reported (2026-11-13)
+      session.diag({ out = session.write("|cff7fb4ffForeverScout|r: |cffff6060" .. tostring(err) .. "|r") })
     end
+    local lines = session.collect
+    session.collect = nil
+    if swallowed then session.panel(lines) end
+    session.replyTo = nil
   end
 end
 
@@ -1809,4 +2419,5 @@ ns._test = {
   noteMob = noteMob, wildNpc = wildNpc, onSpellcastSent = onSpellcastSent, onLootOpened = onLootOpened,
   onMailShow = onMailShow, onInteractionShow = onInteractionShow, handlers = handlers,
   guidTag = guidTag, suffixFromLink = suffixFromLink, costList = costList, drunk = drunk,
+  charKey = charKey, refreshQuests = refreshQuests, scanProfessions = scanProfessions, recipeSpell = recipeSpell,
 }

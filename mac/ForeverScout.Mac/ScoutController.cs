@@ -418,6 +418,7 @@ internal sealed class ScoutController : IDisposable
         if (report.Error is { } e2) Log(TF("journal.error", now, Strings.Error(e2)), report.WillRetry ? Look.Warn : Look.Err);
         if (report.FilesUploaded > 0) Log(TF("journal.uploaded", now, report.FilesUploaded) + " – " + Humor(), Look.Ok);
         if (report.HotfixStored > 0) Log(TF("journal.hotfix", now), Look.Ok);
+        if (report.CreatureCacheStored > 0) Log(TF("journal.creaturecache", now, report.CreatureCount), Look.Ok);
         if (report.AuctionRows > 0) Log(TF("journal.auctions", now, report.AuctionRows), Look.Ok);
         if (report.NothingToDo && !quietIfNothing) Log(TF("journal.nothing", now), Look.Muted);
         if (report.FilesUploaded > 0 || report.HotfixStored > 0) _window?.Flash(TF("done", report.FilesUploaded, report.HotfixStored));
@@ -466,7 +467,7 @@ internal sealed class ScoutController : IDisposable
         try
         {
             // L10: signature2 krävs (ReleaseVerifier) och "issued" får inte vara äldre än den senaste vi sett.
-            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta);
             Settings.BlockedAddons = release.BlockedAddons.ToList();
             Settings.Save();
             await UpdateAddon(release, interactive, announceBlocked: false, alsoBlocked: null);
@@ -476,7 +477,7 @@ internal sealed class ScoutController : IDisposable
             // Linux: appen byter inte ut sig själv än. Finns en nyare signerad version (linux-fälten, signature5)
             // säger appen till och länkar till nedladdningssidan. Addonen ovan uppdateras automatiskt som vanligt.
             SignedRelease lin;
-            try { lin = Settings.AcceptRelease(await Api.LinuxVersionAsync(UpdateKeys.PublicKeyPem)); }
+            try { lin = Settings.AcceptRelease(await Api.LinuxVersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta); }
             catch (ApiException ex) when (ex.Code == ErrorCodes.SignatureMissing) { lin = new SignedRelease(); } // inget Linux-släpp än
             if (lin.LinuxFile is null || !SelfUpdater.IsNewer(lin.Linux))
             {
@@ -490,7 +491,7 @@ internal sealed class ScoutController : IDisposable
             else if (_offered != lin.Linux) { _offered = lin.Linux; Log(TF("update.manual.log", lin.Linux), Look.Warn); }
 #else
             SignedRelease mac;
-            try { mac = Settings.AcceptRelease(await Api.MacVersionAsync(UpdateKeys.PublicKeyPem)); }
+            try { mac = Settings.AcceptRelease(await Api.MacVersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta); }
             catch (ApiException ex) when (ex.Code == ErrorCodes.SignatureMissing) { mac = new SignedRelease(); } // inget Mac-släpp än
             var newVersion = mac.Mac;
             if (mac.MacFile is null || !SelfUpdater.IsNewer(newVersion))
@@ -569,7 +570,7 @@ internal sealed class ScoutController : IDisposable
         {
             // Spärrar som uppladdningen just lärt sig (422) gäller tills nästa versionskontroll.
             var learned = Settings.BlockedAddons.ToList();
-            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem));
+            var release = Settings.AcceptRelease(await Api.VersionAsync(UpdateKeys.PublicKeyPem, Settings.Beta), Settings.Beta);
             Settings.BlockedAddons = release.BlockedAddons.Union(learned).ToList();
             Settings.Save();
             await UpdateAddon(release, interactive: false, announceBlocked: true, alsoBlocked: learned);
@@ -663,6 +664,7 @@ internal sealed class ScoutController : IDisposable
         {
             var oldLang = Settings.Language;
             var oldAuction = Settings.ShareAuctionPrices;
+            var oldBeta = Settings.Beta;
             var f = new SettingsWindow(Settings, pickDir, LinkWithBrowser);
             var closed = new TaskCompletionSource();
             f.Closed += (_, _) => closed.TrySetResult();
@@ -675,6 +677,7 @@ internal sealed class ScoutController : IDisposable
             InstallBundledAddonIfNeeded();
             RefreshStats(force: true);
             UpdateStatus();
+            if (Settings.Beta != oldBeta) _ = CheckUpdates(interactive: false); // 1.0.13: bytt kanal – hämta direkt
         }
         finally { _settingsOpen = false; }
     }

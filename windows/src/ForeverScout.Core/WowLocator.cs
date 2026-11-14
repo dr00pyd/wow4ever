@@ -6,6 +6,8 @@ public sealed record GameDir(string Path, string Flavor)
     public string AddOnsDir => System.IO.Path.Combine(Path, "Interface", "AddOns");
     public string AccountDir => System.IO.Path.Combine(Path, "WTF", "Account");
     public string AdbDir => System.IO.Path.Combine(Path, "Cache", "ADB");
+    /// <summary>1.0.14: spelets varelsecache ligger i Cache\WDB\&lt;locale&gt;\creaturecache.wdb.</summary>
+    public string WdbDir => System.IO.Path.Combine(Path, "Cache", "WDB");
     public override string ToString() => Path;
 }
 
@@ -170,4 +172,25 @@ public static class WowLocator
         catch (SafeFsException) { }
         return list;
     }
+
+    /// <summary>
+    /// 1.0.14: alla Cache\WDB\&lt;locale&gt;\creaturecache.wdb – spelets varelsecache (NPC:ers namn, titel, typ och modell,
+    /// inga personuppgifter). Inga andra filer i Cache\WDB läses.
+    /// </summary>
+    public static List<string> CreatureCacheFiles(GameDir dir)
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var loc in SafeFs.GetDirectories(dir.WdbDir))
+            {
+                var f = System.IO.Path.Combine(loc, CreatureCacheName);
+                if (SafeFs.FileExists(f)) list.Add(f);
+            }
+        }
+        catch (SafeFsException) { }
+        return list;
+    }
+
+    public const string CreatureCacheName = "creaturecache.wdb";
 }

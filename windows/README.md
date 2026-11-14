@@ -31,6 +31,7 @@ flytta – bara addonens och självuppdateringens fasta namn) kontrolleras via h
 | `WTF\Account\*\SavedVariables\ForeverScout.lua` | läsa (det som laddas upp) |
 | `WTF\Account\*\SavedVariables\Auctionator.lua`, `…\Auc-Stat-Simple.lua` | läsa, **bara** när "Dela auktionspriser" är på (av som standard). Filen skickas aldrig, bara föremål, realm/fraktion, dag, lägsta pris per styck och antal |
 | `Cache\ADB\*\DBCache.bin` | läsa (hotfix-cachen) |
+| `Cache\WDB\*\creaturecache.wdb` | läsa (varelsecachen, 1.0.14 – inga andra filer i `Cache\WDB`) |
 | `Interface`, `Interface\AddOns`, `WTF`, `WTF\Account`, `WTF\Account\*`, `…\SavedVariables`, `Cache`, `Cache\ADB`, `Cache\ADB\*` | bara existens och kataloglistning, för att hitta filerna ovan |
 
 Andra filer i WoW-katalogen nekas, till exempel andra addons SavedVariables (de två auktionsfilerna ovan när delningen är av, och Auctioneers `Auc-ScanData.lua` med säljarnamn alltid), `Config.wtf`, `config-cache.wtf` och `Wow.exe`.
@@ -99,6 +100,9 @@ Knappen **Öppna logg** finns i Inställningar.
   - Vid nätfel, 5xx eller 429 görs nya försök med exponentiell backoff (30 s → 1 h). Då skickas alltid den senaste
     versionen av filen.
   - `Cache\ADB\<locale>\DBCache.bin` skickas bara om dess sha256 har ändrats.
+  - 1.0.14: `Cache\WDB\<locale>\creaturecache.wdb` (varelsecachen – NPC:ers namn, titel, typ och modell, inga
+    personuppgifter) skickas gzip-komprimerad till `/api/bidrag/varelser`, bara när rutan "Skicka varelsecachen" är på
+    (standard) och dess sha256 har ändrats. Servern sparar bara varelse → modell och namnet, inte filen.
 - **Kontonamnet** (`WTF\Account\<namn>`) skickas aldrig och visas inte i UI, logg eller felmeddelanden.
 - Tabellen räknas lokalt med en egen Lua-tabellparser (`LuaParser.cs`) som bara godtar literaler. Den kör aldrig kod.
 - Ingen admin (`asInvoker`).

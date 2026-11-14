@@ -83,7 +83,7 @@ ForeverScoutDB = { seq = 7, objects = { [999001] = { n = "Old Chest" }, [999003]
 fire("ADDON_LOADED", "ForeverScout")
 local T = ns._test
 local db = T.db()
-check(db.addon == "1.0.10", "addonversion 1.0.10")
+check(db.addon == "1.0.18", "addonversion 1.0.18")
 check(db.objects[999001].q and db.objects[999001].q > 7 and db.npcs[999002].q and db.npcs[999002].q > 7, "1.0.10: gamla poster utan position får löpnummer vid start")
 check(db.objects[999003].q == nil, "1.0.10: poster med position behåller löpnumret i sina platser")
 check(type(db.mobs) == "table" and type(db.mail) == "table", "mobs och mail finns")
@@ -98,7 +98,7 @@ do
   check(frame.events.PLAYER_LOGIN, "händelsen registrerad: PLAYER_LOGIN")
   fire("PLAYER_LOGIN")
   DEFAULT_CHAT_FRAME.AddMessage = old
-  check(#said == 1 and said[1]:find("1.0.10", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
+  check(#said == 1 and said[1]:find("1.0.18", 1, true) and said[1]:find("/reload", 1, true), "inloggningsraden nämner version och /reload")
 end
 
 ---------------------------------------------------------------------------
@@ -305,7 +305,28 @@ units.target = nil
 fire("ENCOUNTER_END", 663, "Lucifron", 9, 40, 1)
 lootWindow({ { item = 16800, guid = SECRET } })
 local boss = db.loot[#db.loot]
-check(boss.src == "boss" and boss.id == 663 and boss.h == nil, "dold källa: bossen från ENCOUNTER_END")
+check(boss.src == "boss" and boss.id == 663 and type(boss.h) == "string" and #boss.h == 8, "dold källa: bossen från ENCOUNTER_END (1.0.11: med kamptagg)")
+-- 1.0.11: tärningsslag i grupp efter bossen = bossens loot, samma tagg som bossens eget lik; utan boss: inget
+GetLootRollItemLink = function(id) return id == 7 and "|cff0070dd|Hitem:2280::::::::20:::::|h[Kam's Walking Stick]|h|r" or nil end
+GetLootRollItemInfo = function() return "tex", "Kam's Walking Stick", 1, 3 end
+local rb = #db.loot
+fire("START_LOOT_ROLL", 7, 60000)
+local roll = db.loot[#db.loot]
+check(#db.loot == rb + 1 and roll.src == "boss" and roll.id == 663 and roll.items[1].id == 2280 and roll.h == boss.h, "1.0.11: tärningsslag efter bossen = bossens loot, samma tagg")
+fire("START_LOOT_ROLL", 7, 60000)
+check(#db.loot == rb + 1, "1.0.11: samma slag noteras en gång")
+fire("START_LOOT_ROLL", 8, 60000)
+check(#db.loot == rb + 1, "1.0.11: slag utan föremålslänk hoppas över")
+-- 1.0.13: stridsflaggan som blinkar direkt efter bossen stänger inte; en ny strid efter det gör det
+fire("PLAYER_REGEN_DISABLED")
+GetLootRollItemLink = function(id) return (id == 9 or id == 10) and "|cff1eff00|Hitem:15212::::::::20:::::|h[Fighter Broadsword]|h|r" or nil end
+fire("START_LOOT_ROLL", 9, 60000)
+check(#db.loot == rb + 2 and db.loot[#db.loot].id == 663, "1.0.13: stridsflaggan inom 2 s efter bossen stänger inte")
+clock = clock + 30
+fire("PLAYER_REGEN_DISABLED")
+fire("START_LOOT_ROLL", 10, 60000)
+check(#db.loot == rb + 2, "1.0.13: slag efter en ny strid räknas inte till bossen (kan vara trash)")
+fire("PLAYER_REGEN_ENABLED")
 before = #db.loot
 lootWindow({ { item = 16801, guid = SECRET } })
 check(#db.loot == before, "bossen används bara en gång")
@@ -384,22 +405,20 @@ fire("ENCOUNTER_START", 3495, "Magmatus", 1, 5)
 fire("INSTANCE_ENCOUNTER_ENGAGE_UNIT")
 check(#bossRows(3495, "u") == 0, "boss: dold enhet (secret value) ger ingen koppling")
 units.boss1 = nil
-fire("ENCOUNTER_END", 3495, "Magmatus", 1, 5, 1)
+-- 1.0.13: bossens varelser som spelet anger när kampen är vunnen (encounterUnitStatus) – ingen gissning
+fire("ENCOUNTER_END", 3495, "Magmatus", 1, 5, 1, { { creatureID = 261316 }, { creatureID = SECRET }, { creatureID = 0 } })
+local e1 = bossRows(3495, "e")
+check(#e1 == 1 and e1[1].id == 261316 and e1[1].o == 1 and e1[1].im == 3065, "1.0.13: ENCOUNTER_END ger bossens varelse (dolda och 0 hoppas över)")
 lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263438-0000000060" } })
 lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263390-0000000061" } })
-lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263438-0000000062" } })
-local c1 = bossRows(3495, "l")
-check(#c1 == 2 and c1[1].id == 263438 and c1[1].o == 1 and c1[2].id == 263390 and c1[2].o == 2 and c1[1].r and c1[1].r == c1[2].r, "boss: första lootade varelserna efter vunnen fight blir kandidater i ordning, en gång var, samma fight")
-lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263389-0000000063" } })
-lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263466-0000000064" } })
-check(#bossRows(3495, "l") == 3, "boss: högst tre kandidater per fight")
-fire("ENCOUNTER_END", 3496, "Durgen Dirgehammer", 1, 5, 0)
-lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263470-0000000065" } })
-check(#bossRows(3496) == 0, "boss: förlorad fight ger inga kandidater")
-fire("ENCOUNTER_END", 3494, "Plunder", 1, 5, 1)
+check(#bossRows(3495, "l") == 0, "1.0.13: första lootade liket gissas inte längre som boss")
+fire("ENCOUNTER_END", 3495, "Magmatus", 1, 5, 1, { { creatureID = 261316 } })
+check(#bossRows(3495, "e") == 1, "1.0.13: samma koppling sparas en gång")
+fire("ENCOUNTER_END", 3496, "Durgen Dirgehammer", 1, 5, 0, { { creatureID = 261319 } })
+check(#bossRows(3496) == 0, "boss: förlorad fight ger ingen koppling")
+fire("ENCOUNTER_END", 3494, "Plunder", 1, 5, 1, "inte en tabell")
+check(#bossRows(3494) == 0, "1.0.13: ENCOUNTER_END utan lista ger ingen koppling")
 clock = clock + 301
-lootWindow({ { item = 2589, guid = "Creature-0-4372-3065-77-263397-0000000066" } })
-check(#bossRows(3494, "l") == 0, "boss: loot efter tidsfönstret är ingen kandidat")
 local named = false
 for _, b in ipairs(db.bosses) do for _, v in pairs(b) do if v == "Faldrim Anvilmar" or v == "Magmatus" then named = true end end end
 check(not named, "boss: inga namn sparas")
@@ -579,7 +598,7 @@ fire("PLAYER_SOFT_INTERACT_CHANGED", nil, "GameObject-0-1-2-3-1732-0000000001")
 combat = false
 check(db.objects[1732] == nil, "soft interact: inget i strid")
 
-for _, e in ipairs({ "UNIT_HEALTH", "ENCOUNTER_END", "ENCOUNTER_START", "INSTANCE_ENCOUNTER_ENGAGE_UNIT", "CHAT_MSG_SYSTEM", "CONFIRM_BINDER", "BATTLEFIELDS_SHOW", "CONFIRM_TALENT_WIPE",
+for _, e in ipairs({ "UNIT_HEALTH", "ENCOUNTER_END", "ENCOUNTER_START", "START_LOOT_ROLL", "PLAYER_REGEN_DISABLED", "INSTANCE_ENCOUNTER_ENGAGE_UNIT", "CHAT_MSG_SYSTEM", "CONFIRM_BINDER", "BATTLEFIELDS_SHOW", "CONFIRM_TALENT_WIPE",
                      "OPEN_TABARD_FRAME", "ITEM_TEXT_BEGIN", "PLAYER_SOFT_INTERACT_CHANGED", "PLAYER_REGEN_ENABLED" }) do
   check(frame.events[e], "händelsen registrerad: " .. e)
 end
@@ -602,6 +621,391 @@ check(noGuids(db), "inga GUID:er, spelarnamn, bossnamn eller chattext i ForeverS
 check(scan(db), "inga spelar- eller husdjursnamn i ForeverScoutDB (1.0.5)")
 SlashCmdList.FOREVERSCOUT("")
 check(T.session.errors == 0, "1.0.5 utan fångade fel (" .. tostring(T.session.lastError) .. ")")
+
+---------------------------------------------------------------------------
+-- 1.0.11: egen karaktärs framsteg (chars) – klarade quests och kända recept, utan namn
+---------------------------------------------------------------------------
+for _, e in ipairs({ "QUEST_TURNED_IN", "PLAYER_ENTERING_WORLD", "TRADE_SKILL_SHOW", "TRADE_SKILL_UPDATE", "TRADE_SKILL_LIST_UPDATE",
+                     "CRAFT_SHOW", "CRAFT_UPDATE", "PLAYER_LOGOUT" }) do
+  check(frame.events[e], "1.0.11: händelsen registrerad: " .. e)
+end
+local PNAME, REALM = "Prästkragen", "Forever Realm"
+units.player = { guid = "Player-4372-002F7E1E", name = PNAME, level = 24 }
+function UnitClass(t) if t == "player" then return "Priest", "PRIEST", 5 end end
+function GetRealmName() return REALM end
+function GetGuildInfo() return "Hemliga Gillet" end
+
+-- Id ur GUID
+check(T.charKey() == "3112478", "1.0.11: karaktärs-id = GUID:ens hex-del som decimaltal (002F7E1E → 3112478)")
+T.session.charKey = nil
+units.player.guid = "Creature-0-1-2-3-299-0000000001"
+check(T.charKey() == nil, "1.0.11: ingen Player-GUID ger inget id")
+T.session.charKey = nil
+units.player.guid = SECRET
+check(T.charKey() == nil, "1.0.11: dold GUID (secret value) ger inget id")
+T.session.charKey = nil
+units.player.guid = "Player-4372-002F7E1E"
+
+-- Quests: GetQuestsCompleted ({ [id] = true }) vid första PLAYER_ENTERING_WORLD
+local done = { [131] = true, [102] = true, [122] = true, [118] = true }
+function GetQuestsCompleted() local t = {}; for k, v in pairs(done) do t[k] = v end; return t end
+local s0 = db.seq
+fire("PLAYER_ENTERING_WORLD", true, false)
+local me = db.chars and db.chars["3112478"]
+check(me and me.q == "102,118,122,131" and me.qAt == time() and me.lvl == 24 and me.cls == "PRIEST" and me.at == time(),
+      "1.0.11: klarade quests stigande som kommaseparerad sträng, nivå, klass, tider")
+check(db.seq > s0, "1.0.11: ny post ökar seq")
+local s1 = db.seq
+done[140] = true
+fire("PLAYER_ENTERING_WORLD", false, true)
+check(me.q == "102,118,122,131", "1.0.11: PLAYER_ENTERING_WORLD läser bara en gång per session")
+T.refreshQuests()
+check(me.q == "102,118,122,131,140" and db.seq > s1, "1.0.11: ändrad lista ger ny sträng och ny seq")
+local s2 = db.seq
+T.refreshQuests()
+check(db.seq == s2, "1.0.11: oförändrad lista ger ingen ny seq (filen ändras inte)")
+clock = clock + 86400
+T.refreshQuests()
+check(me.qAt == time() and db.seq > s2, "1.0.11: qAt flyttas högst en gång per dygn när listan är oförändrad")
+-- QUEST_TURNED_IN (debounce 2 s; C_Timer kör direkt i testet)
+done[150] = true
+fire("QUEST_TURNED_IN", 150, 400, 0)
+check(me.q:find(",150$") ~= nil, "1.0.11: QUEST_TURNED_IN uppdaterar listan")
+-- Strid: inget arbete förrän striden är slut
+done[151] = true
+combat = true
+fire("QUEST_TURNED_IN", 151, 400, 0)
+check(not me.q:find("151"), "1.0.11: ingen questläsning i strid")
+combat = false
+fire("PLAYER_REGEN_ENABLED")
+check(me.q:find(",151$") ~= nil, "1.0.11: uppskjuten questläsning körs när striden är slut")
+-- Tomt svar (data inte laddad) ersätter aldrig en sparad lista
+local qBefore = me.q
+local savedDone = done
+done = {}
+T.refreshQuests()
+check(me.q == qBefore, "1.0.11: tomt svar behåller den sparade listan")
+-- Reserv: C_QuestLog.GetAllCompletedQuestIDs
+local oldGQC = GetQuestsCompleted
+GetQuestsCompleted = nil
+C_QuestLog = { GetAllCompletedQuestIDs = function() return { 7, 3, 5 } end }
+T.refreshQuests()
+check(me.q == "3,5,7", "1.0.11: reserv C_QuestLog.GetAllCompletedQuestIDs")
+-- Tak 20 000
+C_QuestLog = { GetAllCompletedQuestIDs = function() local t = {}; for i = 1, 25000 do t[i] = 25001 - i end; return t end }
+T.refreshQuests()
+local nq = 0
+for _ in me.q:gmatch("%d+") do nq = nq + 1 end
+check(nq == 20000 and me.q:sub(1, 6) == "1,2,3," , "1.0.11: högst 20 000 quest-id:n")
+C_QuestLog = nil
+GetQuestsCompleted = oldGQC
+done = savedDone
+-- PLAYER_LOGOUT läser listan synkront
+done[160] = true
+fire("PLAYER_LOGOUT")
+check(me.q:find(",160$") ~= nil, "1.0.11: PLAYER_LOGOUT läser listan")
+
+-- Recept (Classic-API:t): rubriker hoppas över, föremålslänkar gissas aldrig
+check(T.recipeSpell("|cffffffff|Henchant:2385|h[Brown Linen Vest]|h|r") == 2385 and T.recipeSpell("|Hspell:3914|h[x]|h") == 3914
+      and T.recipeSpell("|cffffffff|Hitem:2568:0|h[Brown Linen Vest]|h|r") == nil, "1.0.11: spell-id ur enchant:/spell:-länk, aldrig ur item:")
+local trade = { name = "Tailoring", rank = 97, max = 150, rows = {} }
+local function setRows(list) trade.rows = list end
+function GetTradeSkillLine() if trade.name then return trade.name, trade.rank, trade.max end; return "UNKNOWN", 0, 0 end
+function GetNumTradeSkills() return #trade.rows end
+function GetTradeSkillInfo(i) local r = trade.rows[i]; return r.n, r.kind or "easy", 0, r.exp end
+function GetTradeSkillRecipeLink(i)
+  local r = trade.rows[i]
+  if r.item then return "|cffffffff|Hitem:" .. r.item .. ":0|h[" .. r.n .. "]|h|r" end
+  if r.kind == "header" or r.kind == "subheader" then return nil end
+  return "|cffffffff|Henchant:" .. r.id .. "|h[" .. r.n .. "]|h|r"
+end
+local function H(n, exp) return { n = n, kind = "header", exp = exp ~= false } end
+setRows({ H("Cloth"), { n = "Brown Linen Vest", id = 2385 }, { n = "Brown Linen Pants", id = 3914 }, { kind = "subheader", n = "Shirts", exp = true },
+          { n = "Linen Shirt", item = 2576 }, { n = "Simple Linen Pants", id = 2387 } })
+local s3 = db.seq
+fire("TRADE_SKILL_SHOW")
+local tail = me.prof and me.prof["Tailoring"]
+check(tail and tail.r == 97 and tail.m == 150 and tail.s == "2385,2387,3914" and tail.at == time(), "1.0.11: yrke med rank, max och kända recept stigande")
+check(db.seq > s3, "1.0.11: recept ökar seq")
+local s4 = db.seq
+fire("TRADE_SKILL_UPDATE")
+check(db.seq == s4, "1.0.11: oförändrat yrkesfönster ger ingen ny seq")
+-- Filtrerat fönster (sökruta): bara union, listan krymper aldrig
+TradeSkillFrameSearchBox = { GetText = function() return "vest" end }
+setRows({ H("Cloth"), { n = "Brown Linen Vest", id = 2385 }, { n = "Red Linen Vest", id = 2389 } })
+fire("TRADE_SKILL_UPDATE")
+check(tail.s == "2385,2387,2389,3914", "1.0.11: filtrerat fönster: union med den sparade listan")
+TradeSkillFrameSearchBox = nil
+-- Ihopfälld rubrik räknas som filter
+setRows({ H("Cloth", false), H("Bags"), { n = "Linen Bag", id = 3755 } })
+fire("TRADE_SKILL_UPDATE")
+check(tail.s == "2385,2387,2389,3755,3914", "1.0.11: ihopfälld rubrik: union")
+-- Ofiltrerad men kortare lista med samma rank (ett filter addonen inte ser): ingen krympning
+setRows({ { n = "Brown Linen Vest", id = 2385 } })
+fire("TRADE_SKILL_UPDATE")
+check(tail.s == "2385,2387,2389,3755,3914", "1.0.11: kortare ofiltrerad lista med samma rank krymper inte")
+-- Yrket omlärt (ranken sjönk): en fullständig ofiltrerad lista ersätter
+trade.rank = 1
+setRows({ H("Cloth"), { n = "Brown Linen Vest", id = 2385 } })
+fire("TRADE_SKILL_UPDATE")
+check(tail.r == 1 and tail.s == "2385", "1.0.11: fullständig lista efter omlärt yrke ersätter")
+-- Strid: skanningen väntar
+trade.rank = 2
+combat = true
+fire("TRADE_SKILL_UPDATE")
+check(tail.r == 1, "1.0.11: ingen receptskanning i strid")
+combat = false
+fire("PLAYER_REGEN_ENABLED")
+check(tail.r == 2, "1.0.11: uppskjuten receptskanning körs när striden är slut")
+-- Tak 2 000 per yrke
+local big = { H("All") }
+for i = 1, 2500 do big[#big + 1] = { n = "R" .. i, id = 100000 + i } end
+trade.rank = 300
+setRows(big)
+fire("TRADE_SKILL_UPDATE")
+local nr = 0
+for _ in tail.s:gmatch("%d+") do nr = nr + 1 end
+check(nr == 2000, "1.0.11: högst 2 000 recept per yrke")
+-- Någon annans länkade yrke sparas aldrig
+trade.name, trade.rank = "Blacksmithing", 225
+setRows({ { n = "Arcanite Reaper", id = 16994 } })
+IsTradeSkillLinked = function() return true end
+fire("TRADE_SKILL_SHOW")
+check(me.prof["Blacksmithing"] == nil, "1.0.11: länkat yrke (någon annans) sparas inte")
+IsTradeSkillLinked = nil
+GetTradeSkillLine, GetNumTradeSkills, GetTradeSkillInfo, GetTradeSkillRecipeLink = nil, nil, nil, nil
+
+-- Crafts (Classic Enchanting): GetCraftDisplaySkillLine + GetCraftItemLink med enchant:-länk
+function GetCraftDisplaySkillLine() return "Enchanting", 50, 75 end
+local crafts = { { n = "Enchant", kind = "header" }, { n = "Enchant Bracer - Minor Health", id = 7418 }, { n = "Runed Copper Rod", item = 6218 } }
+function GetNumCrafts() return #crafts end
+function GetCraftInfo(i) local r = crafts[i]; return r.n, "", r.kind or "easy", 0, true, 0, 0 end
+function GetCraftItemLink(i)
+  local r = crafts[i]
+  if r.item then return "|Hitem:" .. r.item .. ":0|h[x]|h" end
+  if r.id then return "|Henchant:" .. r.id .. "|h[x]|h" end
+end
+fire("CRAFT_SHOW")
+local ench = me.prof["Enchanting"]
+check(ench and ench.r == 50 and ench.m == 75 and ench.s == "7418", "1.0.11: crafts (Enchanting) via GetCraftItemLink, rubrik och föremål hoppas över")
+GetCraftDisplaySkillLine = function() return nil end
+fire("CRAFT_SHOW")
+check(T.session.errors == 0, "1.0.11: craft utan skill line (Beast Training) hoppas över utan fel")
+GetCraftDisplaySkillLine, GetNumCrafts, GetCraftInfo, GetCraftItemLink = nil, nil, nil, nil
+
+-- Mainline-API:t: C_TradeSkillUI (bas-/underyrke, alla recept-id:n = spell-id:n, bara inlärda)
+C_TradeSkillUI = {
+  GetBaseProfessionInfo = function() return { professionName = "Cooking", skillLevel = 0, maxSkillLevel = 0 } end,
+  GetChildProfessionInfo = function() return { professionName = "Classic Cooking", parentProfessionName = "Cooking", skillLevel = 45, maxSkillLevel = 75 } end,
+  GetAllRecipeIDs = function() return { 2540, 2538, 9999 } end,
+  GetRecipeInfo = function(id) return { recipeID = id, learned = id ~= 9999 } end,
+  IsTradeSkillLinked = function() return false end,
+  IsNPCCrafting = function() return false end,
+}
+fire("TRADE_SKILL_LIST_UPDATE")
+local cook = me.prof["Cooking"]
+check(cook and cook.r == 45 and cook.m == 75 and cook.s == "2538,2540", "1.0.11: Mainline C_TradeSkillUI: rank ur underyrket, bara inlärda recept")
+C_TradeSkillUI.IsNPCCrafting = function() return true end
+C_TradeSkillUI.GetBaseProfessionInfo = function() return { professionName = "Alchemy", skillLevel = 10, maxSkillLevel = 75 } end
+C_TradeSkillUI.GetChildProfessionInfo = nil
+fire("TRADE_SKILL_SHOW")
+check(me.prof["Alchemy"] == nil, "1.0.11: NPC-tillverkning sparas inte")
+C_TradeSkillUI = nil
+
+-- Nivå uppdateras vid PLAYER_LEVEL_UP
+units.player.level = 25
+fire("PLAYER_LEVEL_UP", 25)
+check(me.lvl == 25, "1.0.11: nivån uppdateras vid PLAYER_LEVEL_UP")
+
+-- Inga namn och bara kontraktets fält
+local allowed = { lvl = true, cls = true, at = true, q = true, qAt = true, prof = true }
+local onlyContract = true
+for k, c in pairs(db.chars) do
+  if type(k) ~= "string" or not k:match("^%d+$") then onlyContract = false end
+  for f in pairs(c) do if not allowed[f] then onlyContract = false end end
+  for pn, p in pairs(c.prof) do
+    if type(pn) ~= "string" then onlyContract = false end
+    for f in pairs(p) do if f ~= "r" and f ~= "m" and f ~= "s" and f ~= "at" then onlyContract = false end end
+  end
+end
+check(onlyContract, "1.0.11: chars har bara kontraktets fält och decimala id-nycklar")
+local function noNames(t, seen)
+  seen = seen or {}
+  if seen[t] then return true end
+  seen[t] = true
+  for k, v in pairs(t) do
+    for _, x in ipairs({ k, v }) do
+      if type(x) == "string" and (x == PNAME or x == REALM or x == "Hemliga Gillet" or x:find("Player%-") or x:find("002F7E1E")) then return false end
+    end
+    if type(v) == "table" and not noNames(v, seen) then return false end
+  end
+  return true
+end
+check(noNames(db), "1.0.11: inget karaktärs-, realm- eller guildnamn och ingen GUID i ForeverScoutDB")
+check(noGuids(db) and scan(db), "1.0.11: tidigare integritetskontroller håller fortfarande")
+
+-- /scout test: en rad om chars – antal, aldrig namn eller id
+do
+  local said = {}
+  local old = DEFAULT_CHAT_FRAME.AddMessage
+  DEFAULT_CHAT_FRAME.AddMessage = function(_, msg) said[#said + 1] = msg end
+  SlashCmdList.FOREVERSCOUT("test")
+  DEFAULT_CHAT_FRAME.AddMessage = old
+  local line, leak = nil, false
+  for _, m in ipairs(said) do
+    if m:find("chars: 1 ", 1, true) then line = m end
+    if m:find(PNAME, 1, true) or m:find("3112478", 1, true) then leak = true end
+  end
+  check(line and line:find("quests=") and line:find("professions=3", 1, true), "1.0.11: /scout test sammanfattar chars")
+  check(not leak, "1.0.11: /scout test skriver aldrig namn eller id")
+end
+
+-- Tak: högst 50 karaktärer, den som uppdaterades för längst sedan försvinner
+for i = 1, 49 do db.chars[tostring(1000 + i)] = { lvl = 1, cls = "WARRIOR", at = i, q = "", prof = {} } end
+T.session.charKey = nil
+units.player.guid = "Player-4372-00000ABC"
+T.refreshQuests()
+local nc = 0
+for _ in pairs(db.chars) do nc = nc + 1 end
+check(nc == 50 and db.chars["2748"] and db.chars["1001"] == nil and db.chars["3112478"], "1.0.11: högst 50 karaktärer, äldsta bort")
+-- /scout reset tömmer även chars
+SlashCmdList.FOREVERSCOUT("reset")
+SlashCmdList.FOREVERSCOUT("reset confirm")
+check(next(db.chars) == nil, "1.0.11: /scout reset tömmer chars")
+-- Påslaget som standard (användarens beslut 2026-11-12); "/scout char off" tar bort karaktärens post och stoppar
+-- insamlingen, "/scout char on" startar den igen.
+T.refreshQuests()
+check(db.chars["2748"] ~= nil, "1.0.11: framsteg samlas in utan /scout char on")
+SlashCmdList.FOREVERSCOUT("char off")
+check(db.chars["2748"] == nil, "1.0.11: /scout char off tar bort karaktärens quests och recept")
+T.refreshQuests()
+check(db.chars["2748"] == nil, "1.0.11: efter /scout char off samlas inget in igen")
+SlashCmdList.FOREVERSCOUT("char on")
+check(db.chars["2748"] ~= nil, "1.0.11: /scout char on startar insamlingen igen")
+units.player = nil
+check(T.session.errors == 0, "1.0.11 utan fångade fel (" .. tostring(T.session.lastError) .. ")")
+
+-- 1.0.11: /scout log – en rad i chatten per sparad post (för testare), av som standard, inga namn
+do
+  local said = {}
+  local old = DEFAULT_CHAT_FRAME.AddMessage
+  DEFAULT_CHAT_FRAME.AddMessage = function(_, msg) said[#said + 1] = msg end
+  lootWindow({ { item = 2592, guid = "Creature-0-1-2-3-1666-0000000099" } })
+  local quiet = #said
+  SlashCmdList.FOREVERSCOUT("log on")
+  lootWindow({ { item = 2592, guid = "Creature-0-1-2-3-1666-0000000100" } })
+  local line
+  for _, m in ipairs(said) do if m:find("Scout-logg", 1, true) and m:find("1666", 1, true) then line = m end end
+  SlashCmdList.FOREVERSCOUT("log off")
+  local n = #said
+  lootWindow({ { item = 2592, guid = "Creature-0-1-2-3-1666-0000000101" } })
+  DEFAULT_CHAT_FRAME.AddMessage = old
+  check(quiet == 0, "1.0.11: ingen logg utan /scout log on")
+  check(line ~= nil, "1.0.11: /scout log on skriver en rad per sparad loot")
+  check(#said == n + 0, "1.0.11: /scout log off stänger av")
+end
+
+-- 1.0.12: /scout tipsa – en rad i grupp-/guildchatten, bara på kommando, högst en gång per minut
+do
+  local sent, said = {}, {}
+  local old = DEFAULT_CHAT_FRAME.AddMessage
+  DEFAULT_CHAT_FRAME.AddMessage = function(_, msg) said[#said + 1] = msg end
+  SendChatMessage = function(msg, ch) sent[#sent + 1] = { msg = msg, ch = ch } end
+  local grp, raid, guild = false, false, false
+  IsInGroup = function() return grp end
+  IsInRaid = function() return raid end
+  IsInGuild = function() return guild end
+  SlashCmdList.FOREVERSCOUT("tipsa")
+  check(#sent == 0 and said[#said]:find("guild", 1, true), "1.0.12: tipsa utan grupp och guild skickar inget")
+  guild = true
+  SlashCmdList.FOREVERSCOUT("tipsa")
+  check(#sent == 1 and sent[1].ch == "GUILD" and sent[1].msg:find("Jag kör", 1, true) and sent[1].msg:find("guide.wow4ever.se/scout", 1, true), "1.0.12: tipsa = svensk rad med svensk länk, utan grupp till guilden")
+  check(#sent[1].msg <= 255 and not sent[1].msg:find("|", 1, true), "1.0.12: tipsraden ryms i chatten (≤ 255 tecken, inga |)")
+  SlashCmdList.FOREVERSCOUT("tipsa")
+  check(#sent == 1, "1.0.12: högst en gång per minut")
+  clock = clock + 61
+  grp = true
+  SlashCmdList.FOREVERSCOUT("share")
+  check(#sent == 2 and sent[2].ch == "PARTY" and sent[2].msg:find("I use", 1, true) and sent[2].msg:find("guide.wow4ever.se/en/scout", 1, true) and #sent[2].msg <= 255, "1.0.12: share = engelsk rad med engelsk länk, i grupp till gruppen")
+  clock = clock + 61
+  raid = true
+  SlashCmdList.FOREVERSCOUT("tipsa guild")
+  check(#sent == 3 and sent[3].ch == "GUILD", "1.0.12: tipsa guild väljer guilden även i grupp")
+  clock = clock + 61
+  SlashCmdList.FOREVERSCOUT("tipsa")
+  check(#sent == 4 and sent[4].ch == "RAID", "1.0.12: i raid går tipset till raiden")
+  SlashCmdList.FOREVERSCOUT("lang sv")
+  clock = clock + 61
+  SlashCmdList.FOREVERSCOUT("share")
+  check(#sent == 5 and sent[5].msg:find("I use", 1, true) and said[#said]:find("Skickat", 1, true), "1.0.12: share är engelsk även när addonen visar svenska; svaret på addonens språk")
+  SlashCmdList.FOREVERSCOUT("lang auto")
+  DEFAULT_CHAT_FRAME.AddMessage = old
+  SendChatMessage, IsInGroup, IsInRaid, IsInGuild = nil, nil, nil, nil
+end
+
+-- 1.0.15: svaret hamnar i chattfönstret där kommandot skrevs, annars i vald flik; fel visas i stället för tystnad
+do
+  local typed, def, sel = {}, {}, {}
+  local tab = { AddMessage = function(_, m) typed[#typed + 1] = m end }
+  local old = DEFAULT_CHAT_FRAME.AddMessage
+  DEFAULT_CHAT_FRAME.AddMessage = function(_, m) def[#def + 1] = m end
+  SlashCmdList.FOREVERSCOUT("", { chatFrame = tab })
+  check(#typed >= 1 and #def == 0 and typed[1]:find("ForeverScout", 1, true), "1.0.15: /scout svarar i fönstret där det skrevs")
+  SELECTED_CHAT_FRAME = { AddMessage = function(_, m) sel[#sel + 1] = m end }
+  SlashCmdList.FOREVERSCOUT("debug")
+  check(#sel == 1 and #def == 0, "1.0.15: utan skrivfönster: den valda fliken")
+  SELECTED_CHAT_FRAME = nil
+  local gt = ns.GetTexts
+  ns.GetTexts = function() error("trasig text") end
+  SlashCmdList.FOREVERSCOUT("debug")
+  ns.GetTexts = gt
+  check(def[#def] and def[#def]:find("trasig text", 1, true), "1.0.15: ett fel i kommandot syns i chatten")
+  DEFAULT_CHAT_FRAME.AddMessage = function() error("chatten trasig") end
+  local printed
+  local oldPrint = print
+  print = function(m) printed = m end
+  SlashCmdList.FOREVERSCOUT("debug")
+  print = oldPrint
+  check(printed and printed:find("ForeverScout", 1, true), "1.0.15: går fönstret inte att skriva i: spelets print()")
+  DEFAULT_CHAT_FRAME.AddMessage = old
+  local dg = db.diag
+  check(type(dg) == "table" and (dg.slash or 0) >= 4 and dg.n and dg.n >= 1 and dg.last and dg.last:find("trasig text", 1, true)
+        and not dg.last:find("ForeverScout.lua", 1, true) and dg.out == "print", "1.0.16: db.diag räknar /scout, sista felet och hur svaret skrevs")
+  check(type(dg.frame) == "string" and dg.frame:find(" -> ", 1, true), "1.0.17: db.diag beskriver chattfönstret före och efter")
+  -- 1.0.17: svaret även i ett eget fönster (byggs med påhittade widgetar)
+  local shown, txt
+  local function widget()
+    local w = {}
+    setmetatable(w, { __index = function(_, k) return function() end end })
+    return w
+  end
+  local panel = widget()
+  panel.CreateFontString = function() local t = widget(); t.SetText = function(_, s) txt = s end; return t end
+  panel.CreateTexture = function() return widget() end
+  panel.Show = function() shown = true end
+  local oldCF = CreateFrame
+  CreateFrame = function(kind, name) if name == "ForeverScoutPanel" then return panel end return widget() end
+  UISpecialFrames = {}
+  -- chatten tar emot raden (antalet rader växer): inget fönster
+  local count = 0
+  DEFAULT_CHAT_FRAME.GetNumMessages = function() return count end
+  DEFAULT_CHAT_FRAME.GetMaxLines = function() return 128 end
+  DEFAULT_CHAT_FRAME.AddMessage = function() count = count + 1 end
+  SlashCmdList.FOREVERSCOUT("")
+  check(not shown, "1.0.18: när chatten visar svaret öppnas inget fönster")
+  -- fullt chattfönster (128 rader): antalet kan inte växa – inget fönster
+  count = 128
+  DEFAULT_CHAT_FRAME.AddMessage = function() end
+  SlashCmdList.FOREVERSCOUT("")
+  check(not shown, "1.0.18: fullt chattfönster öppnar inget fönster")
+  count = 40
+  -- ett annat addon sväljer raden (Pigeon, 2026-11-13): antalet växer inte – svaret i fönstret
+  SlashCmdList.FOREVERSCOUT("")
+  CreateFrame = oldCF
+  DEFAULT_CHAT_FRAME.GetNumMessages, DEFAULT_CHAT_FRAME.GetMaxLines, DEFAULT_CHAT_FRAME.AddMessage = nil, nil, old
+  check(shown and txt and txt:find("1.0.18", 1, true) and not txt:find("|cff7fb4ff", 1, true) and UISpecialFrames[1] == "ForeverScoutPanel",
+        "1.0.18: syns inte raden i chatten visas svaret i Forever Scout-fönstret (stängs med Esc)")
+end
 
 print(string.format("ForeverScout mock: %d ok, %d fel", passes, fails))
 if fails > 0 then error("ForeverScout mock: " .. fails .. " fel") end

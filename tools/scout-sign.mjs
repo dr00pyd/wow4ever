@@ -67,6 +67,13 @@ const MAC_FILE = "ForeverScout-mac.zip";
 const DMG_FILE = "ForeverScout-mac.dmg";
 const LINUX_FILE = "ForeverScout-x86_64.AppImage";
 
+/** Beta-kanalens filnamn: "ForeverScout-beta.exe", "ForeverScout-addon-beta.zip", "ForeverScout-beta-x86_64.AppImage". */
+export function betaName(n) {
+  if (n.endsWith(".AppImage")) return n.replace("-x86_64", "-beta-x86_64");
+  const dot = n.lastIndexOf(".");
+  return dot < 0 ? `${n}-beta` : `${n.slice(0, dot)}-beta${n.slice(dot)}`;
+}
+
 function args(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
@@ -172,8 +179,19 @@ function release(a) {
 
   const out = resolve(typeof a.out === "string" ? a.out : join(ROOT, "public", "scout"));
   mkdirSync(out, { recursive: true });
-  const manifestPath = join(out, "version.json");
-  const prev = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
+  // --channel beta: egen signerad version-beta.json och egna filnamn (ForeverScout-beta.exe …) bredvid de vanliga –
+  // klienter med "Betaversioner" påslaget hämtar den (GET /api/bidrag/version?kanal=beta). Finns ingen beta-fil än
+  // börjar den som en kopia av den vanliga, så att delar som inte anges (t.ex. Mac) pekar på de vanliga filerna.
+  if (a.channel !== undefined && a.channel !== "beta") fail("--channel kan bara vara beta");
+  const beta = a.channel === "beta";
+  const fileName = (n) => (beta ? betaName(n) : n);
+  const manifestPath = join(out, beta ? "version-beta.json" : "version.json");
+  const stablePath = join(out, "version.json");
+  const prev = existsSync(manifestPath)
+    ? JSON.parse(readFileSync(manifestPath, "utf8"))
+    : beta && existsSync(stablePath)
+      ? JSON.parse(readFileSync(stablePath, "utf8"))
+      : {};
 
   const m = { v: 1 };
   for (const k of SIGNED_FIELDS_5) if (k !== "v" && k !== "issued" && prev[k] !== undefined) m[k] = prev[k];
@@ -183,8 +201,8 @@ function release(a) {
     const buf = readFileSync(a.exe);
     if (buf[0] !== 0x4d || buf[1] !== 0x5a) fail("--exe är inte en Windows-exe (MZ)");
     const h = sha256(buf);
-    copyFileSync(a.exe, join(out, CLIENT_FILE));
-    Object.assign(m, { client: a.version, clientFile: CLIENT_FILE, sha256: h, clientSig: signB64(privateKey, fileMessage("client", a.version, h)) });
+    copyFileSync(a.exe, join(out, fileName(CLIENT_FILE)));
+    Object.assign(m, { client: a.version, clientFile: fileName(CLIENT_FILE), sha256: h, clientSig: signB64(privateKey, fileMessage("client", a.version, h)) });
   }
   if (a["exe-lite"]) {
     const p = a["exe-lite"];
@@ -193,24 +211,24 @@ function release(a) {
     if (buf[0] !== 0x4d || buf[1] !== 0x5a) fail("--exe-lite är inte en Windows-exe (MZ)");
     if (a.exe && sha256(buf) === sha256(readFileSync(a.exe))) fail("--exe och --exe-lite är samma fil");
     const h = sha256(buf);
-    copyFileSync(p, join(out, LITE_FILE));
-    Object.assign(m, { lite: liteVersion, liteFile: LITE_FILE, liteSha256: h, liteSig: signB64(privateKey, fileMessage("lite", liteVersion, h)) });
+    copyFileSync(p, join(out, fileName(LITE_FILE)));
+    Object.assign(m, { lite: liteVersion, liteFile: fileName(LITE_FILE), liteSha256: h, liteSig: signB64(privateKey, fileMessage("lite", liteVersion, h)) });
   }
   if (a.setup) {
     if (typeof a.setup !== "string" || !existsSync(a.setup)) fail(`hittar inte --setup ${a.setup}`);
     const buf = readFileSync(a.setup);
     if (buf[0] !== 0x4d || buf[1] !== 0x5a) fail("--setup är inte en Windows-exe (MZ)");
     const h = sha256(buf);
-    copyFileSync(a.setup, join(out, SETUP_FILE));
-    Object.assign(m, { setup: setupVersion, setupFile: SETUP_FILE, setupSha256: h, setupSig: signB64(privateKey, fileMessage("setup", setupVersion, h)) });
+    copyFileSync(a.setup, join(out, fileName(SETUP_FILE)));
+    Object.assign(m, { setup: setupVersion, setupFile: fileName(SETUP_FILE), setupSha256: h, setupSig: signB64(privateKey, fileMessage("setup", setupVersion, h)) });
   }
   if (a.addon) {
     if (typeof a.addon !== "string" || !existsSync(a.addon)) fail(`hittar inte --addon ${a.addon}`);
     const buf = readFileSync(a.addon);
     if (buf[0] !== 0x50 || buf[1] !== 0x4b) fail("--addon ska vara en zip (mappen ForeverScout/ med .toc/.lua)");
     const h = sha256(buf);
-    copyFileSync(a.addon, join(out, ADDON_FILE));
-    Object.assign(m, { addon: addonVersion, addonFile: ADDON_FILE, addonSha256: h, addonSig: signB64(privateKey, fileMessage("addon", addonVersion, h)) });
+    copyFileSync(a.addon, join(out, fileName(ADDON_FILE)));
+    Object.assign(m, { addon: addonVersion, addonFile: fileName(ADDON_FILE), addonSha256: h, addonSig: signB64(privateKey, fileMessage("addon", addonVersion, h)) });
   }
   if (a.mac) {
     if (typeof a.mac !== "string" || !existsSync(a.mac)) fail(`hittar inte --mac ${a.mac}`);
@@ -218,8 +236,8 @@ function release(a) {
     const problem = checkMacZip(buf, a["allow-unnotarized"] === true);
     if (problem) fail(problem);
     const h = sha256(buf);
-    copyFileSync(a.mac, join(out, MAC_FILE));
-    Object.assign(m, { mac: macVersion, macFile: MAC_FILE, macSha256: h, macSig: signB64(privateKey, fileMessage("mac", macVersion, h)) });
+    copyFileSync(a.mac, join(out, fileName(MAC_FILE)));
+    Object.assign(m, { mac: macVersion, macFile: fileName(MAC_FILE), macSha256: h, macSig: signB64(privateKey, fileMessage("mac", macVersion, h)) });
   }
   if (a.dmg) {
     if (typeof a.dmg !== "string" || !existsSync(a.dmg)) fail(`hittar inte --dmg ${a.dmg}`);
@@ -227,8 +245,8 @@ function release(a) {
     // UDIF-avbilder slutar med ett 512 byte långt "koly"-block.
     if (buf.length < 4096 || buf.subarray(buf.length - 512, buf.length - 508).toString("latin1") !== "koly") fail("--dmg är inte en macOS-diskavbild (koly saknas)");
     const h = sha256(buf);
-    copyFileSync(a.dmg, join(out, DMG_FILE));
-    Object.assign(m, { dmg: macVersion, dmgFile: DMG_FILE, dmgSha256: h, dmgSig: signB64(privateKey, fileMessage("dmg", macVersion, h)) });
+    copyFileSync(a.dmg, join(out, fileName(DMG_FILE)));
+    Object.assign(m, { dmg: macVersion, dmgFile: fileName(DMG_FILE), dmgSha256: h, dmgSig: signB64(privateKey, fileMessage("dmg", macVersion, h)) });
   }
   if (a.linux) {
     if (typeof a.linux !== "string" || !existsSync(a.linux)) fail(`hittar inte --linux ${a.linux}`);
@@ -236,8 +254,8 @@ function release(a) {
     // En AppImage är en ELF-fil (startaren) följd av en squashfs-avbild ("hsqs") med appen.
     if (buf.length < 1024 * 1024 || buf.readUInt32BE(0) !== 0x7f454c46 || buf.indexOf(Buffer.from("hsqs")) < 0) fail("--linux ska vara en AppImage (client/linux/packaging/make-appimage.sh)");
     const h = sha256(buf);
-    copyFileSync(a.linux, join(out, LINUX_FILE));
-    Object.assign(m, { linux: linuxVersion, linuxFile: LINUX_FILE, linuxSha256: h, linuxSig: signB64(privateKey, fileMessage("linux", linuxVersion, h)) });
+    copyFileSync(a.linux, join(out, fileName(LINUX_FILE)));
+    Object.assign(m, { linux: linuxVersion, linuxFile: fileName(LINUX_FILE), linuxSha256: h, linuxSig: signB64(privateKey, fileMessage("linux", linuxVersion, h)) });
   }
   // Behållna delar måste fortfarande verifiera mot samma nyckel.
   for (const [kind, ver, sh, sig] of [["client", m.client, m.sha256, m.clientSig], ["lite", m.lite, m.liteSha256, m.liteSig], ["setup", m.setup, m.setupSha256, m.setupSig], ["addon", m.addon, m.addonSha256, m.addonSig], ["mac", m.mac, m.macSha256, m.macSig], ["dmg", m.dmg, m.dmgSha256, m.dmgSig], ["linux", m.linux, m.linuxSha256, m.linuxSig]]) {

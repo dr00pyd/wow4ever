@@ -45,6 +45,7 @@ nu också granskar `client/mac/ForeverScout.Mac`). På macOS gäller:
 | `<spelkatalog>/WTF/Account/*/SavedVariables/ForeverScout.lua` | läsa |
 | `<spelkatalog>/WTF/Account/*/SavedVariables/Auctionator.lua`, `…/Auc-Stat-Simple.lua` | läsa, **bara** när "Dela auktionspriser" är på (av som standard). Filen skickas aldrig, bara föremål, realm/fraktion, dag, lägsta pris och antal (se Windows-README och `docs/SCOUT.md`) |
 | `<spelkatalog>/Cache/ADB/*/DBCache.bin` | läsa |
+| `<spelkatalog>/Cache/WDB/*/creaturecache.wdb` | läsa (varelsecachen, 1.0.14 – kan stängas av i Inställningar) |
 | `Interface`, `WTF/Account/*`, `…/SavedVariables`, `Cache/ADB/*` | bara existens och listning |
 | `~/Library/Application Support/ForeverScout/**` (katalogen 0700) | `settings.json`, `uploads.log`, `instance.lock`, `instance.sock` |
 | `~/Library/LaunchAgents/se.wow4ever.foreverscout.plist` | när "Starta vid inloggning" är på – från 1.0.12 förvalt på välkomstskärmen (går att kryssa ur), annars av tills du kryssar i den i Inställningar |

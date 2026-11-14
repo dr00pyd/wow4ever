@@ -46,6 +46,8 @@
     <Compile Include="..\..\windows\tests\DeviceLinkTests.cs" Link="Shared\DeviceLinkTests.cs" />
     <!-- 1.0.12: M1–M4 i Core (uppladdningskön, en dålig fil, tolken, hängd nedladdning) – körs även för macOS/Linux. -->
     <Compile Include="..\..\windows\tests\Release112Tests.cs" Link="Shared\Release112Tests.cs" />
+    <!-- 1.0.14: varelsecachen (Cache/WDB/<locale>/creaturecache.wdb) – samma regler på macOS/Linux. -->
+    <Compile Include="..\..\windows\tests\CreatureCacheTests.cs" Link="Shared\CreatureCacheTests.cs" />
   </ItemGroup>
 
 </Project>

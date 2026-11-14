@@ -17,9 +17,9 @@
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
     <DefineConstants>$(DefineConstants);LINUX</DefineConstants>
 
-    <Version>1.0.12</Version>
-    <FileVersion>1.0.12.0</FileVersion>
-    <AssemblyVersion>1.0.12.0</AssemblyVersion>
+    <Version>1.0.14</Version>
+    <FileVersion>1.0.14.0</FileVersion>
+    <AssemblyVersion>1.0.14.0</AssemblyVersion>
     <Company>Forever-guiden (guide.wow4ever.se)</Company>
     <Product>Forever Scout</Product>
     <AssemblyTitle>Forever Scout</AssemblyTitle>
